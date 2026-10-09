@@ -17,6 +17,9 @@ pub struct Save {
     /// 0 = standard plane, 1 = second plane model.
     pub plane: u8,
     pub invert_pitch: bool,
+    /// Only overrides; absent entries keep the published defaults.
+    pub bindings: std::collections::BTreeMap<String, [String; 2]>,
+    pub livery: u8,
 }
 
 fn path() -> PathBuf {
@@ -34,16 +37,46 @@ fn path() -> PathBuf {
 impl Save {
     pub fn store(&self) {
         let p = path();
-        let _ = std::fs::create_dir_all(p.parent().unwrap());
-        // Write then rename so a crash never leaves a truncated save.
+        if let Err(e) = self.write_to(&p) { error!("Could not save progress to {}: {e}", p.display()); }
+    }
+
+    fn write_to(&self, p: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = p.parent().filter(|p| !p.as_os_str().is_empty()) { std::fs::create_dir_all(parent)?; }
         let tmp = p.with_extension("tmp");
-        if std::fs::write(&tmp, serde_json::to_vec_pretty(self).unwrap()).is_ok() {
-            let _ = std::fs::rename(&tmp, &p);
-        }
+        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        std::fs::rename(tmp, p)
     }
 }
 
 pub fn plugin(app: &mut App) {
-    let save = std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let mut save: Save = std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    save.time = save.time.min(2);
+    save.plane = save.plane.min(1);
+    save.livery = save.livery.min(2);
+    save.collected.retain(|i| (*i as usize) < crate::ipoint::READINGS);
     app.insert_resource::<Save>(save);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn save_can_replace_an_existing_file_and_keep_readings() {
+        let p = std::env::temp_dir().join(format!("sport-island-save-{}.json", std::process::id()));
+        let mut save = Save::default();
+        save.write_to(&p).unwrap();
+        save.collected.insert(239);
+        save.lang = Some("SP".into());
+        save.plane = 1;
+        save.livery = 1;
+        save.bindings.insert("Board / eject".into(), ["KeyQ".into(), "RightThumb".into()]);
+        save.write_to(&p).unwrap();
+        let read: Save = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(read.collected, save.collected);
+        assert_eq!(read.lang, save.lang);
+        assert_eq!(read.plane, 1);
+        assert_eq!(read.livery, 1);
+        assert_eq!(read.bindings, save.bindings);
+        std::fs::remove_file(p).unwrap();
+    }
 }

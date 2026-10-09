@@ -12,6 +12,8 @@ mod menu;
 mod plane;
 mod player;
 mod save;
+mod scenery;
+mod sound;
 mod world;
 
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,6 +63,6 @@ fn main() {
         .init_state::<AppState>()
         .init_state::<Mode>()
         .add_plugins((save::plugin, lang::plugin, input::plugin, collide::plugin, gx::plugin, world::plugin))
-        .add_plugins((player::plugin, plane::plugin, ipoint::plugin, menu::plugin, debug::plugin))
+        .add_plugins((player::plugin, plane::plugin, ipoint::plugin, menu::plugin, scenery::plugin, sound::plugin, debug::plugin))
         .run();
 }

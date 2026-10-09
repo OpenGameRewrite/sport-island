@@ -2,7 +2,7 @@
 
 use crate::save::Save;
 use crate::gx::GxEnv;
-use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::core_pipeline::tonemapping::{Tonemapping, DebandDither};
 use bevy::prelude::*;
 use serde::Deserialize;
 
@@ -76,7 +76,9 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         Projection::Perspective(PerspectiveProjection { far: 300_000.0, near: 2.0, fov: 55f32.to_radians(), ..default() }),
         Transform::from_xyz(0.0, 3000.0, 8000.0).looking_at(Vec3::ZERO, Vec3::Y),
         Tonemapping::None,
+        DebandDither::Disabled,
         MainCamera,
+        SpatialListener::new(20.0),
     ));
 }
 

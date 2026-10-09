@@ -74,6 +74,9 @@ pub enum Ui {
     Back,
     ChooseLanguage,
     BoardHint,
+    Controls,
+    Livery,
+    ResetControls,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -94,6 +97,9 @@ const UI: &[[&str; 5]] = &[
     ["Back", "Retour", "Zurück", "Volver", "Indietro"],
     ["Choose your language", "Choisissez votre langue", "Sprache wählen", "Elige tu idioma", "Scegli la lingua"],
     ["Board plane", "Monter dans l'avion", "Ins Flugzeug", "Subir al avión", "Sali sull'aereo"],
+    ["Controls", "Commandes", "Steuerung", "Controles", "Comandi"],
+    ["Livery", "Couleur", "Farbe", "Color", "Colore"],
+    ["Reset controls", "Réinitialiser", "Zurücksetzen", "Restablecer controles", "Ripristina comandi"],
 ];
 
 pub fn plugin(app: &mut App) {

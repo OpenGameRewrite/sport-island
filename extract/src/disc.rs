@@ -30,6 +30,21 @@ impl Disc {
         Ok(buf)
     }
 
+    /// Read a data range mapped by the executable's DOL section table. Extracted
+    /// palette data stays in assets; the executable itself is never written out.
+    pub fn dol_data(&mut self, address: u32, length: u32) -> Result<Vec<u8>> {
+        let meta = self.part.meta()?;
+        let d = &meta.raw_dol;
+        for i in 0..18 {
+            let (offset, base, size) = (be32(d, i * 4), be32(d, 0x48 + i * 4), be32(d, 0x90 + i * 4));
+            if address >= base && address.checked_add(length).is_some_and(|end| base.checked_add(size).is_some_and(|limit| end <= limit)) {
+                let start = (offset + address - base) as usize;
+                return d.get(start..start + length as usize).map(|v| v.to_vec()).context("DOL data range outside file");
+            }
+        }
+        bail!("DOL data address not mapped: {address:08x}")
+    }
+
     /// Reads a Yaz0-compressed U8 archive (`.carc`) and returns its files keyed by path.
     pub fn archive(&mut self, path: &str) -> Result<Archive> {
         u8_archive(&yaz0(&self.read(path)?)?).with_context(|| path.to_string())
