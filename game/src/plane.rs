@@ -3,7 +3,8 @@
 //! The flight model follows the structure of the original: a rigid body pushed
 //! by tail forces (steering), engine thrust, speed-dependent lift and per-axis
 //! drag, all in game units per 60 Hz frame. Core constants were recovered from
-//! the original. Ground assistance and modern input adaptation remain partial.
+//! the original, including terrain-normal assistance and the evolving up target.
+//! Water takeoff, reference-body stabilization and modern input adaptation are partial.
 
 use crate::collide::Collision;
 use crate::input::Controls;
@@ -51,6 +52,10 @@ pub struct Plane {
     boost_held: bool,
     boost_force: f32,
     boost_sign: f32,
+    up_target: Vec3,
+    inverted: f32,
+    ground_up: Vec3,
+    ground_strength: f32,
 }
 
 #[derive(Resource)]
@@ -60,10 +65,15 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, gun_side: false, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0 }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, gun_side: false, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0 }
     }
     /// One original-rate physics tick, independent of rendering and collision.
+    #[cfg(test)]
     fn step(&mut self, t: &mut Transform, c: &Controls, invert_pitch: bool) {
+        self.step_with_surface(t, c, invert_pitch, None);
+    }
+
+    fn step_with_surface(&mut self, t: &mut Transform, c: &Controls, invert_pitch: bool, surface: Option<(f32, Vec3)>) {
         self.previous = *t;
         let rot = t.rotation;
         let (x, y, z) = (rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z);
@@ -112,16 +122,53 @@ impl Plane {
         let g = self.flight * (z.y.abs() * if z.y < 0.0 { DIVE_GRAVITY } else { 0.0 } - STALL_GRAVITY) + STALL_GRAVITY;
         force.y -= g;
 
-        // Self-levelling towards world up, weakened while pitching.
-        torque += y.cross(Vec3::Y) * LEVEL_TORQUE * (1.0 - self.ctrl.y.abs());
+        // Original low-pass helper: 30..120 clearance and 0.6..0.9 surface/up
+        // alignment. Push along the surface normal projected off the nose,
+        // scaled by tangential speed; do not add a fixed world-Y impulse.
+        let mut ground = 0.0;
+        if let Some((clearance, normal)) = surface {
+            ground = ((normal.dot(y) - 0.6) / 0.3).clamp(0.0, 1.0)
+                * (1.0 - ((clearance - 30.0) / 90.0).clamp(0.0, 1.0));
+            if ground > 0.0 {
+                self.ground_up = (normal - z * normal.dot(z)).normalize_or_zero();
+            }
+        }
+        self.ground_strength = self.flight * (self.ground_strength + 0.01 * (ground - self.ground_strength));
+        let tangent_speed = (self.vel - self.ground_up * self.vel.dot(self.ground_up)).length();
+        let assistance = self.ground_strength * tangent_speed;
+        force += self.ground_up * (assistance * 0.1);
+        torque += y.cross(self.ground_up) * (assistance * 0.004);
+
+        let level = 1.0 - self.ctrl.y.abs();
+        torque += y.cross(self.up_target) * LEVEL_TORQUE * level;
 
         self.vel = self.vel * 0.997 + force;
         let local_t = rot.inverse() * torque;
         self.ang = self.ang * ANGULAR_DAMPING + rot * (local_t / INERTIA);
-        let ang = self.ang;
-        if ang.length_squared() > 1e-12 {
-            t.rotation = (Quat::from_scaled_axis(ang) * t.rotation).normalize();
+        // The body's original integrator multiplies by (omega/2, 1), then
+        // normalizes; its effective angle is 2*atan(|omega|/2).
+        let half = self.ang * 0.5;
+        t.rotation = (Quat::from_xyzw(half.x, half.y, half.z, 1.0) * rot).normalize();
+
+        // Constrain the right axis against the evolving up target, then rebuild
+        // an orthonormal frame. Pitch remains free through vertical maneuvers.
+        let body = Mat3::from_quat(t.rotation);
+        let right = (body.x_axis - self.up_target * body.x_axis.dot(self.up_target)).normalize_or_zero();
+        let nose = right.cross(body.y_axis).normalize_or_zero();
+        if right != Vec3::ZERO && nose != Vec3::ZERO {
+            t.rotation = Quat::from_mat3(&Mat3::from_cols(right, nose.cross(right), nose)).normalize();
         }
+        let (up, nose) = (t.rotation * Vec3::Y, t.rotation * Vec3::Z);
+        let upright = ((up.y + 1.0) / 1.3).clamp(0.0, 1.0);
+        self.inverted = ((self.inverted + (1.0 - upright) * 0.01) * 0.999).min(1.0);
+        let weight = level * (0.01 - 0.009 * self.inverted);
+        // Rotate a fraction of the angle to world up, as in the vector helper.
+        let axis = up.cross(Vec3::Y);
+        let target = if axis.length_squared() > 3.8147e-6 {
+            Quat::from_axis_angle(axis.normalize(), axis.length().atan2(up.dot(Vec3::Y)) * weight) * up
+        } else { up };
+        let target = (target - nose * target.dot(nose)).normalize_or_zero();
+        if target != Vec3::ZERO { self.up_target = target; }
         // Keep the plane's roll for visuals separate from physics.
         self.bank += (self.ctrl.x * 0.6 - self.bank) * 0.08;
     }
@@ -288,17 +335,18 @@ fn fly(
     mut player: Single<(&mut Player, &mut Transform, &mut Visibility), Without<Plane>>,
 ) {
     let Ok((mut p, mut t)) = q.single_mut() else { return };
-    p.step(&mut t, &c, save.invert_pitch);
+    let from = t.translation;
+    let ground = col.ground(from, 0.0, 120.0);
+    // The original contact callback maps KCL's low five bits to surface flags;
+    // bit 0x40 (type 6) selects the water controller, not land assistance.
+    let water = ground.as_ref().filter(|h| h.flags & 0x1f == 6);
+    if water.is_some() { p.ground_strength = 0.0; }
+    let surface = ground.as_ref().filter(|h| h.flags & 0x1f != 6).map(|h| (h.t, if h.n.y < 0.0 { -h.n } else { h.n }));
+    p.step_with_surface(&mut t, &c, save.invert_pitch, surface);
 
     // Terrain / sea: crash and bail out with the parachute.
     let step = p.vel;
-    let from = t.translation;
-    // The original ground proximity helper keeps low passes afloat.
-    if let Some(h) = col.ground(from, 0.0, 120.0) && h.n.y.abs() > 0.6 {
-        p.vel.y += (1.0 - ((h.t - 30.0) / 90.0).clamp(0.0, 1.0)) * 0.1;
-    }
-    if from.y < 35.0 { p.vel.y += ((35.0 - from.y) * 0.01).min(0.1); }
-    let crashed = col.raycast(from, step.normalize_or_zero(), step.length() + 10.0).is_some() || from.y + step.y < 5.0;
+    let crashed = col.raycast(from, step.normalize_or_zero(), step.length() + 10.0).is_some_and(|h| h.flags & 0x1f != 6);
     if crashed {
         let (pl, pt, pv) = &mut *player;
         eject(pl, pt, from - step * 10.0 + Vec3::Y * 80.0, p.vel * 0.2);
@@ -307,6 +355,10 @@ fn fly(
         return;
     }
     t.translation += step;
+    // Water contact remains simplified: float at the departure height until
+    // the pilot pitches up, rather than continually accelerating upward.
+    let water_height = water.map_or(5.0, |h| h.pos.y + 5.0);
+    if t.translation.y < water_height { t.translation.y = water_height; p.vel.y = p.vel.y.max(0.0); }
 }
 
 fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer>, mut sounds: MessageWriter<crate::sound::Sound>, mut q: Query<(&mut Plane, &Transform)>) {
@@ -437,6 +489,41 @@ fn trails(time: Res<Time>, fixed: Res<Time<Fixed>>, plane: Single<(&Plane, &Tran
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ground_assistance_uses_surface_alignment_and_clearance() {
+        let controls = Controls::default();
+        for surface in [(120.0, Vec3::Y), (10.0, Vec3::X)] {
+            let mut pose = Transform::IDENTITY;
+            let mut plane = Plane::new(pose, 7.0);
+            plane.step_with_surface(&mut pose, &controls, false, Some(surface));
+            assert_eq!(plane.ground_strength, 0.0, "distant ground and walls must not push upward");
+            assert_eq!(plane.vel.y, 0.0);
+        }
+        let normal = Vec3::new(0.5, 0.8660254, 0.0);
+        let mut pose = Transform::IDENTITY;
+        let mut plane = Plane::new(pose, 7.0);
+        plane.step_with_surface(&mut pose, &controls, false, Some((30.0, normal)));
+        assert!(plane.vel.x > 0.0 && plane.vel.y > 0.0, "banked surface must push along its normal");
+        assert!((plane.vel.x / plane.vel.y - normal.x / normal.y).abs() < 1e-5);
+        let strength = plane.ground_strength;
+        plane.step(&mut pose, &controls, false);
+        assert!(plane.ground_strength > 0.0 && plane.ground_strength < strength, "assistance fades after leaving the surface");
+    }
+
+    #[test]
+    fn sustained_maneuvers_keep_an_orthonormal_attitude() {
+        let mut pose = Transform::IDENTITY;
+        let mut plane = Plane::new(pose, 7.0);
+        for frame in 0..216_000 {
+            let phase = frame as f32 * 0.013;
+            plane.step(&mut pose, &Controls { stick: Vec2::new(phase.sin(), phase.cos()), ..default() }, false);
+            assert!(plane.vel.is_finite() && plane.up_target.is_finite());
+            assert!((pose.rotation.length() - 1.0).abs() < 1e-5);
+            let nose = pose.rotation * Vec3::Z;
+            assert!(nose.dot(plane.up_target).abs() < 1e-5);
+        }
+    }
 
     #[test]
     fn livery_tags_the_primitive_using_its_material_not_its_entity_name() {

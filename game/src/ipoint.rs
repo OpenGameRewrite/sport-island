@@ -9,6 +9,7 @@ use crate::save::Save;
 use crate::world::{MainCamera, TimeOfDay};
 use crate::AppState;
 use bevy::prelude::*;
+use bevy::world_serialization::WorldInstanceReady;
 use serde::Deserialize;
 
 pub const READINGS: usize = 240;
@@ -28,6 +29,17 @@ pub struct IPoints(pub Vec<IPointDef>);
 
 #[derive(Component)]
 pub struct Marker(pub usize);
+
+#[derive(Component, Default)]
+pub struct MarkerFade(f32);
+#[derive(Component)]
+struct MarkerIcon(usize);
+#[derive(Component)]
+struct IconSource(Handle<crate::gx::GxMaterial>);
+#[derive(Component)]
+struct PointGlow(usize);
+#[derive(Resource)]
+struct PointEffect(Handle<AnimationGraph>, AnimationNodeIndex);
 
 /// Currently shown message and when it expires.
 #[derive(Resource, Default)]
@@ -58,11 +70,59 @@ pub fn plugin(app: &mut App) {
     let defs: Vec<IPointDef> = crate::read_json("data/ipoints.json");
     app.insert_resource(IPoints(defs))
         .init_resource::<Shown>()
+        .add_systems(Startup, setup_effect)
         .add_systems(OnEnter(AppState::Play), spawn)
-        .add_systems(Update, (billboard, collect.run_if(crate::menu::playing), show_message, spark, counter, hint).chain().run_if(in_state(AppState::Play)));
+        .add_systems(Update, (billboard, paint_icons, collect.run_if(crate::menu::playing), show_message, spark, counter, hint).chain().run_if(in_state(AppState::Play)));
 }
 
 pub fn name_id(def: &IPointDef) -> u32 { def.msg << 8 }
+
+fn setup_effect(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<Assets<AnimationGraph>>) {
+    let (graph, node) = AnimationGraph::from_clip(assets.load(GltfAssetLabel::Animation(0).from_asset("models/ipoint_fx.glb")));
+    commands.insert_resource(PointEffect(graphs.add(graph), node));
+}
+
+/// The core and its glow are separate original models. Keep the effect attached
+/// to the billboard so fixed points and moving carriers use the same visuals.
+pub fn attach_visuals(ready: On<WorldInstanceReady>, markers: Query<&Marker>, children: Query<&Children>, names: Query<&bevy::gltf::GltfMaterialName>, assets: Res<AssetServer>, mut commands: Commands) {
+    let Ok(marker) = markers.get(ready.entity) else { return };
+    for child in children.iter_descendants(ready.entity) {
+        if names.get(child).is_ok_and(|n| n.0 == "lambert2") {
+            commands.entity(child).insert(MarkerIcon(marker.0));
+        }
+    }
+    commands.entity(ready.entity).with_children(|c| {
+        c.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/ipoint_fx.glb"))), Transform::default(), Visibility::default(), PointGlow(marker.0))).observe(play_effect).observe(crate::player::no_culling);
+    });
+}
+
+fn play_effect(ready: On<WorldInstanceReady>, children: Query<&Children>, mut players: Query<&mut AnimationPlayer>, effect: Res<PointEffect>, mut commands: Commands) {
+    for child in children.iter_descendants(ready.entity) {
+        if let Ok(mut player) = players.get_mut(child) {
+            player.play(effect.1).repeat();
+            commands.entity(child).insert(AnimationGraphHandle(effect.0.clone()));
+        }
+    }
+}
+
+fn paint_icons(mut commands: Commands, save: Res<Save>, tod: Res<TimeOfDay>, assets: Res<AssetServer>, mut mats: ResMut<Assets<crate::gx::GxMaterial>>, mut icons: Query<(Entity, &MarkerIcon, Option<&IconSource>, &mut MeshMaterial3d<crate::gx::GxMaterial>)>, mut glow: Query<(&PointGlow, &mut Visibility)>, mut cache: Local<std::collections::HashMap<(AssetId<crate::gx::GxMaterial>, bool), Handle<crate::gx::GxMaterial>>>) {
+    for (e, icon, original, mut handle) in &mut icons {
+        let read = save.collected.contains(&((icon.0 * 3) as u16 + tod.0 as u16));
+        let source = original.map_or_else(|| handle.0.clone(), |s| s.0.clone());
+        let key = (source.id(), read);
+        let replacement = if let Some(h) = cache.get(&key) { h.clone() } else {
+            let Some(mut material) = mats.get(&source).cloned() else { continue };
+            let texture = if read { "WS2_pln_info_core_check_grey" } else { "WS2_pln_info_core" };
+            material.t0 = Some(assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = false).load(format!("textures/{texture}.png")));
+            let h = mats.add(material); cache.insert(key, h.clone()); h
+        };
+        if original.is_none() { commands.entity(e).insert(IconSource(source)); }
+        handle.0 = replacement;
+    }
+    for (point, mut v) in &mut glow {
+        *v = if save.collected.contains(&((point.0 * 3) as u16 + tod.0 as u16)) { Visibility::Hidden } else { Visibility::Inherited };
+    }
+}
 
 fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>, existing: Query<(), With<MessageBox>>) {
     if !existing.is_empty() {
@@ -74,7 +134,7 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>,
         if p.kind != 0 {
             continue;
         }
-        commands.spawn((WorldAssetRoot(scene.clone()), Transform::from_translation(p.pos).with_scale(Vec3::splat(2.5)), Marker(i)));
+        commands.spawn((WorldAssetRoot(scene.clone()), Transform::from_translation(p.pos), Marker(i), MarkerFade::default())).observe(attach_visuals);
     }
     let font = TextFont::from(FontSource::sans_serif());
     commands.spawn((Node { position_type: PositionType::Absolute, left: percent(4), bottom: px(8), ..default() }, Text::new(""), font.clone().with_font_size(FontSize::Px(18.0)), TextColor(Color::WHITE), BoardHint, DespawnOnExit(AppState::Play)));
@@ -109,22 +169,25 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>,
     commands.spawn((Node { position_type: PositionType::Absolute, width: px(24), height: px(24), border_radius: BorderRadius::all(px(12)), ..default() }, BackgroundColor(Color::srgb(0.6, 0.95, 1.0)), GlobalZIndex(5), Visibility::Hidden, Spark, DespawnOnExit(AppState::Play)));
 }
 
-fn billboard(cam: Single<&GlobalTransform, With<MainCamera>>, time: Res<Time>, save: Res<Save>, tod: Res<TimeOfDay>, points: Res<IPoints>, player: Query<&Transform, (With<Player>, Without<Marker>)>, plane: Query<&Transform, (With<Plane>, Without<Marker>)>, parents: Query<&GlobalTransform>, mut q: Query<(&Marker, &GlobalTransform, Option<&ChildOf>, &mut Transform, &mut Visibility)>) {
+fn billboard(cam: Single<&GlobalTransform, With<MainCamera>>, time: Res<Time>, points: Res<IPoints>, player: Query<&Transform, (With<Player>, Without<Marker>)>, plane: Query<&Transform, (With<Plane>, Without<Marker>)>, parents: Query<&GlobalTransform>, mut q: Query<(&Marker, &GlobalTransform, Option<&ChildOf>, &mut Transform, &mut Visibility, &mut MarkerFade)>) {
     let c = cam.translation();
     let viewer = plane.single().or(player.single()).map_or(c, |t| t.translation);
-    for (m, global, parent, mut t, mut vis) in &mut q {
+    for (m, global, parent, mut t, mut vis, mut fade) in &mut q {
         // Original range: per-landmark approach radius (minimum 200) and a
         // 600-unit outer fade band. Previously every point was visible globally.
         let range = points.0[m.0].radius.max(200.0);
         let distance = viewer.distance(global.translation());
-        *vis = if distance <= range + 600.0 { Visibility::Inherited } else { Visibility::Hidden };
-        let d = c - global.translation();
-        let rotation = Quat::from_rotation_y(d.x.atan2(d.z));
+        let toward = (global.translation() - c).normalize_or_zero();
+        let facing = ((toward.dot(*cam.forward()) - 0.8) / 0.1).clamp(0.0, 1.0);
+        let target = (1.0 - (distance - range).max(0.0) / 600.0).clamp(0.0, 1.0) * facing;
+        // Original appearance is immediate; disappearance takes up to 20 ticks.
+        let rate = if target < fade.0 { 0.05 } else { 1.0 } * time.delta_secs() * 60.0;
+        fade.0 += (target - fade.0).clamp(-rate, rate);
+        *vis = if fade.0 > 0.001 { Visibility::Inherited } else { Visibility::Hidden };
+        let rotation = cam.rotation();
         t.rotation = parent.and_then(|p| parents.get(p.parent()).ok()).map_or(rotation, |p| p.rotation().inverse() * rotation);
-        // Already-read points shrink, like the greyed check marks in the original.
-        let read = save.collected.contains(&((m.0 * 3) as u16 + tod.0 as u16));
-        let target = if read { 1.4 } else { 2.5 + 0.15 * (time.elapsed_secs() * 3.0 + m.0 as f32).sin() };
-        t.scale = Vec3::splat(target * (1.0 - (distance - range).max(0.0) / 600.0).clamp(0.0, 1.0));
+        // The original bounds distance-dependent icon enlargement to 1..2.
+        t.scale = Vec3::splat((c.distance(global.translation()) * 0.002).clamp(1.0, 2.0) * fade.0);
     }
 }
 
@@ -142,7 +205,9 @@ fn collect(
 ) {
     let pos = plane.single().or(player.single()).map(|t| t.translation);
     let Ok(pos) = pos else { return };
-    let hit = markers.iter().filter(|(_, _, visible)| visible.get()).map(|(m, t, _)| (m.0, t.translation(), t.translation().distance(pos))).filter(|(i, _, d)| *d <= points.0[*i].radius.max(200.0)).min_by(|a, b| a.2.total_cmp(&b.2));
+    // Collection is a physical 50-unit check in the original, independent of
+    // the camera-facing fade. A nearby point behind the camera still counts.
+    let hit = markers.iter().map(|(m, t, visible)| (m.0, t.translation(), t.translation().distance(pos), visible.get())).filter(|(i, _, d, visible)| *d <= points.0[*i].radius.max(200.0) && (*visible || *d <= 50.0)).map(|(i, source, distance, _)| (i, source, distance)).min_by(|a, b| a.2.total_cmp(&b.2));
     let key = hit.map(|(i, _, _)| (i, tod.0));
     if key.is_some() && key != *inside {
         let (i, source, _) = hit.unwrap();
@@ -194,21 +259,17 @@ fn show_message(
     }
 }
 
-fn spark(shown: Res<Shown>, time: Res<Time>, camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>, window: Single<&Window>, mut spark: Single<(&mut Node, &mut Visibility), (With<Spark>, Without<MessageBox>)>, mut gizmos: Gizmos) {
+fn spark(shown: Res<Shown>, time: Res<Time>, camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>, window: Single<&Window>, mut spark: Single<(&mut Node, &mut Visibility), (With<Spark>, Without<MessageBox>)>) {
     let elapsed = time.elapsed_secs() - shown.entered - 0.15;
-    let active = shown.index.is_some() && (0.0..0.5).contains(&elapsed);
+    const DURATION: f32 = 29.0 / 60.0;
+    let active = shown.index.is_some() && (0.0..DURATION).contains(&elapsed);
     *spark.1 = if active { Visibility::Inherited } else { Visibility::Hidden };
     if !active { return; }
     let end = Vec2::new(window.width() * 0.04 + 25.0, window.height() - 200.0);
     let start = camera.0.world_to_viewport(camera.1, shown.source).unwrap_or(end);
-    let f = elapsed / 0.5;
+    let f = elapsed / DURATION;
     let pos = start.lerp(end, f) + Vec2::new(0.0, -80.0 * (f * std::f32::consts::PI).sin());
     spark.0.left = px(pos.x); spark.0.top = px(pos.y);
-    // The original transmission advances from world point to card in 29 frames.
-    for i in 0..3 {
-        let radius = 50.0 + 180.0 * f + i as f32 * 20.0;
-        gizmos.circle(Isometry3d::new(shown.source, camera.1.rotation()), radius, Color::srgba(0.2, 0.7, 1.0, 0.6 * (1.0 - f)));
-    }
 }
 
 fn counter(save: Res<Save>, tod: Res<TimeOfDay>, mut text: Single<&mut Text, With<Counter>>) {

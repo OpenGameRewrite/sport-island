@@ -50,6 +50,8 @@ struct AttachedSound { name: &'static str, bone: &'static str }
 #[derive(Component)]
 struct Follower { points: Vec<Vec3>, segment: usize, distance: f32, speed: f32, looping: bool }
 #[derive(Component)]
+struct Guide { paths: [Vec<Vec3>; 3], time: u8 }
+#[derive(Component)]
 struct Target { radius: f32, respawn: f32 }
 #[derive(Component)]
 struct Ambient { kind: u16, range: f32, next: f32 }
@@ -73,7 +75,7 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(Island(objects))
         .add_systems(Startup, setup)
         .add_systems(Update, visibility)
-        .add_systems(Update, (follow, birds, targets, ambient, fireworks).run_if(crate::menu::playing));
+        .add_systems(Update, (guide_route, follow, birds, targets, ambient, fireworks).chain().run_if(crate::menu::playing));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -182,10 +184,11 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<As
         crate::sound::source(&mut commands, &assets, &sounds, entity, "SE_CMN_SEA_PLANE", 1200.0);
         if i == 0 { commands.entity(entity).insert(Carried { index: 78, bone: "WS2_common_seaplane" }).observe(attach_point); }
     }
-    let guide: Placements = crate::read_json("data/guide_path0.json");
-    if let Some(route) = guide.routes.into_iter().find(|r| r.points.len() > 1) {
-        commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/guideplane.glb"))), Transform::from_translation(route.points[0]), Visibility::default(), Carried { index: 44, bone: "plane_body" }, Follower { points: route.points, segment: 0, distance: 0.0, speed: 420.0, looping: true })).observe(attach_point).observe(crate::player::no_culling);
-    }
+    let paths = std::array::from_fn(|time| {
+        let guide: Placements = crate::read_json(&format!("data/guide_path{time}.json"));
+        guide.routes.into_iter().find(|r| r.points.len() > 1).expect("original guide route missing").points
+    });
+    commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/guideplane.glb"))), Transform::from_translation(paths[0][0]), Visibility::default(), Carried { index: 44, bone: "plane_body" }, Follower { points: paths[0].clone(), segment: 0, distance: 0.0, speed: 420.0, looping: true }, Guide { paths, time: 0 })).observe(attach_point).observe(crate::player::no_culling);
     let balloons: Placements = crate::read_json("data/island_f0.json");
     for p in balloons.objects.into_iter().filter(|p| p.group == 3 && (p.kind == 3 || p.kind == 4)) {
         let giant = p.kind == 4;
@@ -216,11 +219,24 @@ fn start_animation(ready: On<WorldInstanceReady>, children: Query<&Children>, an
 fn attach_point(ready: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, carried: Query<&Carried>, points: Res<IPoints>, assets: Res<AssetServer>, mut commands: Commands) {
     let Ok(carried) = carried.get(ready.entity) else { return };
     let bone = children.iter_descendants(ready.entity).find(|&e| names.get(e).is_ok_and(|n| n.as_str() == carried.bone)).unwrap_or(ready.entity);
-    commands.entity(bone).with_child((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/ipoint.glb"))), Transform::from_translation(points.0[carried.index].pos).with_scale(Vec3::splat(2.5)), Marker(carried.index)));
+    commands.entity(bone).with_children(|c| {
+        c.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/ipoint.glb"))), Transform::from_translation(points.0[carried.index].pos), Marker(carried.index), crate::ipoint::MarkerFade::default())).observe(crate::ipoint::attach_visuals);
+    });
 }
 
 fn visibility(tod: Res<TimeOfDay>, mut q: Query<(&Times, &mut Visibility)>) {
     for (times, mut v) in &mut q { *v = if times.0 & (1 << tod.0) != 0 { Visibility::Inherited } else { Visibility::Hidden }; }
+}
+
+fn guide_route(tod: Res<TimeOfDay>, mut q: Query<(&mut Guide, &mut Follower, &mut Transform)>) {
+    for (mut guide, mut path, mut transform) in &mut q {
+        if guide.time == tod.0 { continue; }
+        guide.time = tod.0;
+        path.points.clone_from(&guide.paths[tod.0 as usize]);
+        path.segment = 0;
+        path.distance = 0.0;
+        transform.translation = path.points[0];
+    }
 }
 
 fn follow(time: Res<Time>, mut q: Query<(&mut Follower, &mut Transform)>) {

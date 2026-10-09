@@ -35,7 +35,7 @@ pub fn plugin(app: &mut App) {
 /// Exercises the playable loop through normal controls; requires an isolated SI_SAVE.
 fn smoke(
     time: Res<Time<Real>>, state: Res<State<crate::AppState>>, mode: Res<State<crate::Mode>>,
-    mut c: ResMut<crate::input::Controls>, mut phase: Local<u8>, mut paused_at: Local<Option<Vec3>>,
+    mut c: ResMut<crate::input::Controls>, mut phase: Local<u8>, mut paused_at: Local<Option<Vec3>>, mut boarded_at: Local<f32>,
     plane: Query<&Transform, With<crate::plane::Plane>>, menu: Res<crate::menu::Menu>,
     markers: Query<&crate::ipoint::Marker>,
 ) {
@@ -44,8 +44,10 @@ fn smoke(
     match *phase {
         0 if now > 2.0 => { c.down = true; *phase = 1; }
         1 if now > 3.0 => { c.confirm = true; *phase = 2; }
-        2 if *state.get() == crate::AppState::Play && now > 5.0 => { assert_eq!(markers.iter().count(), 80, "all sightseeing points must spawn"); c.board = true; *phase = 3; }
+        2 if *state.get() == crate::AppState::Play && now > 5.0 => { assert_eq!(markers.iter().count(), 80, "all sightseeing points must spawn"); c.board = true; *boarded_at = now; *phase = 3; }
         3 if *mode.get() == crate::Mode::Fly => {
+            // Pull back briefly to take off from water through normal input.
+            if now < *boarded_at + 0.45 { c.stick.y = -0.25; }
             c.shoot = true;
             if now > 7.0 { c.flare = true; *phase = 4; }
         }
@@ -70,7 +72,8 @@ fn visit_point(time: Res<Time>, points: Res<crate::ipoint::IPoints>, mut done: L
     if *done || time.elapsed_secs() < 2.0 { return; }
     assert!(std::env::var_os("SI_SAVE").is_some(), "SI_POINT requires an isolated SI_SAVE");
     let i: usize = std::env::var("SI_POINT").unwrap().parse().unwrap();
-    player.single_mut().unwrap().translation = points.0[i].pos;
+    let distance = std::env::var("SI_POINT_DISTANCE").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+    player.single_mut().unwrap().translation = points.0[i].pos + Vec3::Z * distance;
     *done = true;
 }
 

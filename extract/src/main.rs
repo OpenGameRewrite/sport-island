@@ -113,6 +113,13 @@ fn main() -> Result<()> {
                 fs::write(out.join(format!("{folder}/{name}.png")), image.png()?)?;
             }
         }
+        // The information core's alternate textures are selected at runtime;
+        // exporting only the model's default loses the collected check marks.
+        let points = disc.archive("Stage/PlnScene/Pln1P.carc")?;
+        let core = points.get("G3D/WS2_pln_info_core.brres").context("information core missing")?;
+        for (name, image) in mdl::textures(core, &mdl::brres(core)) {
+            fs::write(out.join(format!("textures/{name}.png")), image.png()?)?;
+        }
     }
     if want("audio") {
         sound::extract(&mut disc, &out.join("audio"))?;
