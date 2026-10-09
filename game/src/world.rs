@@ -1,0 +1,142 @@
+//! Wuhu Island, sky domes and the three original times of day.
+
+use crate::save::Save;
+use bevy::light::GlobalAmbientLight;
+use bevy::pbr::DistanceFog;
+use bevy::prelude::*;
+use bevy::world_serialization::WorldInstanceReady;
+use serde::Deserialize;
+
+#[derive(Deserialize, Clone)]
+struct LightDef {
+    pos: Vec3,
+    aim: Vec3,
+    color: [u8; 4],
+}
+
+#[derive(Deserialize, Clone)]
+struct FogDef {
+    start: f32,
+    end: f32,
+    color: [u8; 4],
+}
+
+#[derive(Deserialize, Clone)]
+struct EnvFile {
+    lights: Vec<LightDef>,
+    ambient: Vec<[u8; 4]>,
+    fog: Vec<FogDef>,
+}
+
+#[derive(Resource)]
+struct Envs(Vec<EnvFile>);
+
+/// 0 day, 1 dusk, 2 night (the three Island Flyover settings).
+#[derive(Resource, Clone, Copy, PartialEq)]
+pub struct TimeOfDay(pub u8);
+
+#[derive(Component)]
+pub struct MainCamera;
+
+#[derive(Component)]
+struct Sun;
+
+/// Sky dome for one time of day.
+#[derive(Component)]
+struct Sky(u8);
+
+/// Lit windows and lamps shown at night.
+#[derive(Component)]
+struct NightLights;
+
+pub fn rgb(c: [u8; 4]) -> Color { Color::srgb_u8(c[0], c[1], c[2]) }
+
+pub fn plugin(app: &mut App) {
+    let envs = (0..3).map(|i| crate::read_json(&format!("data/env{i}.json"))).collect();
+    let time = app.world().resource::<Save>().time.min(2);
+    app.insert_resource(Envs(envs))
+        .insert_resource(TimeOfDay(time))
+        .insert_resource(ClearColor(Color::srgb(0.4, 0.8, 1.0)))
+        .add_systems(Startup, setup)
+        .add_systems(Update, (apply_time.run_if(resource_changed::<TimeOfDay>), sky_follow, cycle_time.run_if(crate::menu::playing)));
+}
+
+fn island_scene(assets: &AssetServer, i: usize) -> WorldAssetRoot {
+    WorldAssetRoot(assets.load(GltfAssetLabel::Scene(i).from_asset("models/island.glb")))
+}
+
+fn setup(mut commands: Commands, assets: Res<AssetServer>) {
+    // island.glb scenes: island, island_L, island_R, island_V, sea, under, vr, vr_E, vr_N.
+    // island_R duplicates the island for the water reflection pass; not needed here.
+    for i in [0, 3, 4, 5] {
+        commands.spawn(island_scene(&assets, i));
+    }
+    commands.spawn((island_scene(&assets, 1), NightLights, Visibility::Hidden));
+    for (t, scene) in [(0u8, 6usize), (1, 7), (2, 8)] {
+        commands.spawn((island_scene(&assets, scene), Sky(t), Visibility::Hidden)).observe(sky_ready);
+    }
+    commands.spawn((
+        Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection { far: 300_000.0, near: 2.0, fov: 55f32.to_radians(), ..default() }),
+        Transform::from_xyz(0.0, 3000.0, 8000.0).looking_at(Vec3::ZERO, Vec3::Y),
+        DistanceFog::default(),
+        MainCamera,
+    ));
+    commands.spawn((DirectionalLight { illuminance: 9000.0, ..default() }, Transform::default(), Sun));
+}
+
+/// Sky domes ignore fog.
+fn sky_ready(ev: On<WorldInstanceReady>, children: Query<&Children>, mats: Query<&MeshMaterial3d<StandardMaterial>>, mut assets: ResMut<Assets<StandardMaterial>>) {
+    for e in children.iter_descendants(ev.entity) {
+        if let Ok(m) = mats.get(e)
+            && let Some(mut mat) = assets.get_mut(&m.0)
+        {
+            mat.fog_enabled = false;
+            mat.unlit = true;
+        }
+    }
+}
+
+fn apply_time(
+    time: Res<TimeOfDay>,
+    envs: Res<Envs>,
+    mut sun: Single<(&mut DirectionalLight, &mut Transform), With<Sun>>,
+    mut fog: Single<&mut DistanceFog>,
+    mut ambient: ResMut<GlobalAmbientLight>,
+    mut clear: ResMut<ClearColor>,
+    mut skies: Query<(&Sky, &mut Visibility), Without<NightLights>>,
+    mut night: Query<&mut Visibility, With<NightLights>>,
+) {
+    let env = &envs.0[time.0 as usize];
+    let l = &env.lights[0];
+    sun.0.color = rgb(l.color);
+    sun.0.illuminance = [9000.0, 7000.0, 3500.0][time.0 as usize];
+    *sun.1 = Transform::from_translation(l.pos).looking_at(l.aim, Vec3::Y);
+    ambient.color = rgb(env.ambient[0]);
+    ambient.brightness = [2500.0, 2200.0, 1800.0][time.0 as usize];
+    if let Some(f) = env.fog.iter().find(|f| f.end > f.start) {
+        fog.color = rgb(f.color);
+        fog.falloff = bevy::pbr::FogFalloff::Linear { start: f.start * 3.0, end: f.end * 3.0 };
+        clear.0 = rgb(f.color);
+    }
+    for (s, mut v) in &mut skies {
+        *v = if s.0 == time.0 { Visibility::Inherited } else { Visibility::Hidden };
+    }
+    for mut v in &mut night {
+        *v = if time.0 == 2 { Visibility::Inherited } else { Visibility::Hidden };
+    }
+}
+
+fn sky_follow(cam: Single<&Transform, With<MainCamera>>, mut skies: Query<&mut Transform, (With<Sky>, Without<MainCamera>)>) {
+    for mut t in &mut skies {
+        t.translation = Vec3::new(cam.translation.x, 0.0, cam.translation.z);
+    }
+}
+
+fn cycle_time(c: Res<crate::input::Controls>, mut time: ResMut<TimeOfDay>, mut save: ResMut<Save>) {
+    if c.time {
+        time.0 = (time.0 + 1) % 3;
+        save.time = time.0;
+        save.store();
+    }
+}

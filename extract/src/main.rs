@@ -54,6 +54,7 @@ const MODELS: &[(&str, &str, &str)] = &[
     ("Stage/PlnScene/PlnSub.carc", "G3D/WS2_pln_propeller.brres", "propeller"),
     ("Stage/PlnScene/PlnSub.carc", "G3D/WS2_pln_bullet.brres", "bullet"),
     ("Stage/PlnScene/PlnSub.carc", "G3D/WS2_pln_signalgun.brres", "signalgun"),
+    ("Stage/PlnScene/PlnSub.carc", "G3D/WS2_pln_parachute.brres", "parachute"),
     ("Stage/PlnScene/Pln1P.carc", "G3D/WS2_pln_info_core.brres", "ipoint"),
     ("Stage/PlnScene/Pln1P.carc", "G3D/WS2_pln_guidplane.brres", "guideplane"),
     ("Stage/PlnScene/Pln1P.carc", "G3D/WS2_pln_small_balloon.brres", "small_balloon"),
@@ -137,6 +138,11 @@ fn data(disc: &mut Disc, out: &Path) -> Result<()> {
         let d = arc.iter().find(|(k, _)| k.ends_with(name)).map(|(_, v)| v).with_context(|| name.to_string())?;
         write_json(&out.join(format!("data/{outname}.json")), &pmp::to_json(d))?;
     }
+    for i in 0..3 {
+        let arc = disc.archive(&format!("Stage/PlnScene/PlnEnv{i}.carc"))?;
+        let find = |ext: &str| arc.iter().find(|(k, _)| k.ends_with(ext)).map(|(_, v)| v.as_slice());
+        write_json(&out.join(format!("data/env{i}.json")), &env_json(find(".plight"), find(".pfog")))?;
+    }
     // i-points ("landmarks"): 0xBC-byte records after a 16-byte header.
     let act = disc.archive("Stage/Shared/Activity.carc")?;
     let lm = act.iter().find(|(k, _)| k.ends_with("LandMarkData.exbin")).map(|(_, v)| v).context("LandMarkData")?;
@@ -162,6 +168,34 @@ fn data(disc: &mut Disc, out: &Path) -> Result<()> {
     }
     println!("  data");
     Ok(())
+}
+
+/// Lights (LGHT/LOBJ) and fog (FOGM/FOGD) for one time of day.
+fn env_json(light: Option<&[u8]>, fog: Option<&[u8]>) -> Value {
+    use disc::{be16, be32, bef};
+    let rgba = |d: &[u8], o: usize| [d[o], d[o + 1], d[o + 2], d[o + 3]];
+    let v3 = |d: &[u8], o: usize| [bef(d, o), bef(d, o + 4), bef(d, o + 8)];
+    let mut lights = vec![];
+    let mut ambient = vec![];
+    if let Some(d) = light {
+        let (n, na) = (be16(d, 0x10) as usize, be16(d, 0x12) as usize);
+        for i in 0..n {
+            let o = 0x28 + i * 0x50;
+            lights.push(json!({ "kind": be32(d, o + 0x10), "flags": be16(d, o + 0x16), "pos": v3(d, o + 0x18), "aim": v3(d, o + 0x24), "intensity": bef(d, o + 0x30), "color": rgba(d, o + 0x34) }));
+        }
+        for i in 0..na {
+            ambient.push(json!(rgba(d, 0x28 + n * 0x50 + i * 8)));
+        }
+    }
+    let mut fogs = vec![];
+    if let Some(d) = fog {
+        let n = be16(d, 0x10) as usize;
+        for i in 0..n {
+            let o = 0x14 + i * 0x30;
+            fogs.push(json!({ "kind": d[o + 0x24], "start": bef(d, o + 0x10), "end": bef(d, o + 0x14), "color": rgba(d, o + 0x20) }));
+        }
+    }
+    json!({ "lights": lights, "ambient": ambient, "fog": fogs })
 }
 
 fn models(disc: &mut Disc, out: &Path, only: Option<&str>) -> Result<()> {

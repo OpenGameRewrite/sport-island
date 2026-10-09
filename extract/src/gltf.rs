@@ -15,7 +15,8 @@ pub struct Gltf {
     pub nodes: Vec<Value>,
     pub skins: Vec<Value>,
     pub animations: Vec<Value>,
-    pub scene_roots: Vec<usize>,
+    /// One scene per model: (name, root nodes).
+    pub scenes: Vec<(String, Vec<usize>)>,
 }
 
 impl Gltf {
@@ -76,7 +77,7 @@ impl Gltf {
         let mut root = json!({
             "asset": { "version": "2.0", "generator": "sport-island-extract" },
             "scene": 0,
-            "scenes": [{ "nodes": self.scene_roots }],
+            "scenes": self.scenes.iter().map(|(n, r)| json!({ "name": n, "nodes": r })).collect::<Vec<_>>(),
             "nodes": self.nodes,
             "buffers": [{ "byteLength": self.bin.len() }],
             "bufferViews": self.views,

@@ -5,6 +5,13 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 pub fn plugin(app: &mut App) {
+    // SI_PLAY skips the title screen; SI_FLY also boards the plane.
+    if std::env::var("SI_PLAY").is_ok() || std::env::var("SI_FLY").is_ok() {
+        app.add_systems(Update, skip_title.before(crate::plane::board));
+    }
+    if std::env::var("SI_LOG").is_ok() {
+        app.add_systems(Update, log_state);
+    }
     if std::env::var("SI_SHOT").is_ok() {
         app.add_systems(Update, shoot);
     }
@@ -31,4 +38,47 @@ fn shoot(mut commands: Commands, time: Res<Time>, mut done: Local<u8>, mut exit:
         exit.write(AppExit::Success);
         *done = 2;
     }
+}
+
+fn skip_title(
+    state: Res<State<crate::AppState>>,
+    mut next: ResMut<NextState<crate::AppState>>,
+    mut menu: ResMut<crate::menu::Menu>,
+    mut controls: ResMut<crate::input::Controls>,
+    mode: Res<State<crate::Mode>>,
+    mut frames: Local<u32>,
+) {
+    if *state.get() == crate::AppState::Title {
+        menu.open = false;
+        next.set(crate::AppState::Play);
+    } else if std::env::var("SI_FLY").is_ok() && *mode.get() == crate::Mode::Walk {
+        *frames += 1;
+        if *frames == 30 {
+            controls.board = true;
+        }
+    }
+}
+
+pub fn log_state(
+    time: Res<Time>,
+    mode: Res<State<crate::Mode>>,
+    state: Res<State<crate::AppState>>,
+    player: Query<&Transform, With<crate::player::Player>>,
+    planes: Query<&Transform, With<crate::plane::Plane>>,
+    cam: Query<&Transform, With<crate::world::MainCamera>>,
+    mut last: Local<f32>,
+) {
+    if time.elapsed_secs() - *last < 1.0 {
+        return;
+    }
+    *last = time.elapsed_secs();
+    info!(
+        "t={:.1} state={:?} mode={:?} players={:?} planes={:?} cam={:?}",
+        time.elapsed_secs(),
+        state.get(),
+        mode.get(),
+        player.iter().map(|t| t.translation).collect::<Vec<_>>(),
+        planes.iter().map(|t| t.translation).collect::<Vec<_>>(),
+        cam.iter().map(|t| t.translation).collect::<Vec<_>>()
+    );
 }

@@ -562,7 +562,7 @@ pub fn to_glb(models: &[Model], images: &HashMap<String, tex::Image>, anims: &[c
         let model_root = g.nodes.len();
         let roots: Vec<usize> = m.bones.iter().enumerate().filter(|(_, b)| b.parent.is_none()).map(|(i, _)| base_node + i).collect();
         g.nodes.push(json!({ "name": m.name, "children": roots }));
-        g.scene_roots.push(model_root);
+        g.scenes.push((m.name.clone(), vec![model_root]));
         // Materials.
         let mut mat_ids = vec![];
         for mat in &m.materials {
