@@ -1,0 +1,10 @@
+[package]
+name = "sport-island-extract"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+nod = "2.0.0-alpha.9"
+png = "0.18.1"
+serde_json = "1.0.151"

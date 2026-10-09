@@ -1,0 +1,43 @@
+# Whitelist: only our own source goes in. Everything extracted from the
+# game (models, textures, audio, text, collision, code) stays local.
+/*
+!/.gitignore
+!/.gitattributes
+!/Cargo.toml
+!/Cargo.lock
+!/rust-toolchain.toml
+!/README.md
+!/extract/
+!/game/
+!/.github/
+
+# Never commit game data or decompiler output, even inside whitelisted dirs.
+*.rvz
+*.iso
+*.wbfs
+*.wia
+*.gcz
+*.ciso
+*.dol
+*.rel
+*.carc
+*.szs
+*.arc
+*.brres
+*.brsar
+*.brstm
+*.bmg
+*.kcl
+*.pmp
+*.bti
+*.tpl
+*.glb
+*.gltf
+*.png
+*.wav
+*.ogg
+*.bin
+*.exbin
+*.json
+target/
+asm/
