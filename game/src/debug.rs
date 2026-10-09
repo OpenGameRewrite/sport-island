@@ -9,6 +9,9 @@ pub fn plugin(app: &mut App) {
     if std::env::var("SI_PLAY").is_ok() || std::env::var("SI_FLY").is_ok() {
         app.add_systems(Update, skip_title.before(crate::plane::board));
     }
+    if std::env::var("SI_MODEL").is_ok() {
+        app.add_systems(Startup, inspect_model);
+    }
     if std::env::var("SI_LOG").is_ok() {
         app.add_systems(Update, log_state);
     }
@@ -81,4 +84,20 @@ pub fn log_state(
         planes.iter().map(|t| t.translation).collect::<Vec<_>>(),
         cam.iter().map(|t| t.translation).collect::<Vec<_>>()
     );
+}
+
+/// `SI_MODEL=name[:scene]` shows one converted model in isolation (`SI_DIST` = camera distance).
+fn inspect_model(mut commands: Commands, assets: Res<AssetServer>) {
+    let spec = std::env::var("SI_MODEL").unwrap();
+    let (name, scene) = spec.split_once(':').map_or((spec.as_str(), 0), |(n, s)| (n, s.parse().unwrap_or(0)));
+    let dist: f32 = std::env::var("SI_DIST").ok().and_then(|s| s.parse().ok()).unwrap_or(100.0);
+    let center = Vec3::new(0.0, 20000.0, 0.0);
+    commands
+        .spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(scene).from_asset(format!("models/{name}.glb")))), Transform::from_translation(center)))
+        .observe(crate::player::no_culling);
+    commands.spawn((
+        Camera3d::default(),
+        Camera { order: 5, ..default() },
+        Transform::from_translation(center + Vec3::new(dist * 0.6, dist * 0.4, dist)).looking_at(center, Vec3::Y),
+    ));
 }

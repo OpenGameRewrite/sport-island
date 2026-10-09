@@ -1,10 +1,9 @@
 //! Wuhu Island, sky domes and the three original times of day.
 
 use crate::save::Save;
-use bevy::light::GlobalAmbientLight;
-use bevy::pbr::DistanceFog;
+use crate::gx::GxEnv;
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
-use bevy::world_serialization::WorldInstanceReady;
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone)]
@@ -38,9 +37,6 @@ pub struct TimeOfDay(pub u8);
 #[derive(Component)]
 pub struct MainCamera;
 
-#[derive(Component)]
-struct Sun;
-
 /// Sky dome for one time of day.
 #[derive(Component)]
 struct Sky(u8);
@@ -73,57 +69,41 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     }
     commands.spawn((island_scene(&assets, 1), NightLights, Visibility::Hidden));
     for (t, scene) in [(0u8, 6usize), (1, 7), (2, 8)] {
-        commands.spawn((island_scene(&assets, scene), Sky(t), Visibility::Hidden)).observe(sky_ready);
+        commands.spawn((island_scene(&assets, scene), Sky(t), Visibility::Hidden));
     }
     commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection { far: 300_000.0, near: 2.0, fov: 55f32.to_radians(), ..default() }),
         Transform::from_xyz(0.0, 3000.0, 8000.0).looking_at(Vec3::ZERO, Vec3::Y),
-        DistanceFog::default(),
+        Tonemapping::None,
         MainCamera,
     ));
-    commands.spawn((DirectionalLight { illuminance: 9000.0, ..default() }, Transform::default(), Sun));
-}
-
-/// Sky domes ignore fog.
-fn sky_ready(ev: On<WorldInstanceReady>, children: Query<&Children>, mats: Query<&MeshMaterial3d<StandardMaterial>>, mut assets: ResMut<Assets<StandardMaterial>>) {
-    for e in children.iter_descendants(ev.entity) {
-        if let Ok(m) = mats.get(e)
-            && let Some(mut mat) = assets.get_mut(&m.0)
-        {
-            mat.fog_enabled = false;
-            mat.unlit = true;
-        }
-    }
 }
 
 fn apply_time(
     time: Res<TimeOfDay>,
     envs: Res<Envs>,
-    mut sun: Single<(&mut DirectionalLight, &mut Transform), With<Sun>>,
-    mut fog: Single<&mut DistanceFog>,
-    mut ambient: ResMut<GlobalAmbientLight>,
+    mut gx: ResMut<GxEnv>,
     mut clear: ResMut<ClearColor>,
     mut skies: Query<(&Sky, &mut Visibility), Without<NightLights>>,
     mut night: Query<&mut Visibility, With<NightLights>>,
 ) {
     let env = &envs.0[time.0 as usize];
     let l = &env.lights[0];
-    sun.0.color = rgb(l.color);
-    sun.0.illuminance = [9000.0, 7000.0, 3500.0][time.0 as usize];
-    *sun.1 = Transform::from_translation(l.pos).looking_at(l.aim, Vec3::Y);
-    ambient.color = rgb(env.ambient[0]);
-    ambient.brightness = [2500.0, 2200.0, 1800.0][time.0 as usize];
+    let v = |c: [u8; 4]| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.0;
+    gx.sun_dir = (l.aim - l.pos).normalize();
+    gx.sun_color = v(l.color);
+    gx.ambient = v(env.ambient[0]);
     if let Some(f) = env.fog.iter().find(|f| f.end > f.start) {
-        fog.color = rgb(f.color);
-        fog.falloff = bevy::pbr::FogFalloff::Linear { start: f.start * 3.0, end: f.end * 3.0 };
+        gx.fog_color = v(f.color);
+        gx.fog = Vec2::new(f.start, f.end) * 3.0;
         clear.0 = rgb(f.color);
     }
-    for (s, mut v) in &mut skies {
-        *v = if s.0 == time.0 { Visibility::Inherited } else { Visibility::Hidden };
+    for (s, mut vis) in &mut skies {
+        *vis = if s.0 == time.0 { Visibility::Inherited } else { Visibility::Hidden };
     }
-    for mut v in &mut night {
-        *v = if time.0 == 2 { Visibility::Inherited } else { Visibility::Hidden };
+    for mut vis in &mut night {
+        *vis = if time.0 == 2 { Visibility::Inherited } else { Visibility::Hidden };
     }
 }
 

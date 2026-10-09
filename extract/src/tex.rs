@@ -44,12 +44,6 @@ pub fn palette_color(fmt: u32, c: u16) -> [u8; 4] {
     }
 }
 
-/// Bytes used by one mip level.
-pub fn size(fmt: u32, w: usize, h: usize) -> usize {
-    let (bw, bh, bytes) = block(fmt);
-    w.div_ceil(bw) * h.div_ceil(bh) * bytes
-}
-
 fn block(fmt: u32) -> (usize, usize, usize) {
     match fmt {
         0 | 8 | 14 => (8, 8, 32),
@@ -138,13 +132,4 @@ pub fn decode(d: &[u8], fmt: u32, w: usize, h: usize, pal: Option<&[[u8; 4]]>) -
         }
     }
     Ok(Image { w, h, rgba })
-}
-
-/// Decodes a BTI file (used for effect textures).
-pub fn bti(d: &[u8]) -> Result<Image> {
-    let fmt = d[0] as u32;
-    let (w, h) = (be16(d, 2) as usize, be16(d, 4) as usize);
-    let (pal_fmt, pal_n, pal_off) = (d[9] as u32, be16(d, 10) as usize, be32(d, 12) as usize);
-    let pal: Vec<_> = (0..pal_n).map(|i| palette_color(pal_fmt, be16(d, pal_off + i * 2))).collect();
-    decode(&d[be32(d, 0x1C) as usize..], fmt, w, h, Some(&pal))
 }

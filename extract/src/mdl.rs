@@ -86,15 +86,6 @@ pub fn quat(r: [f32; 3]) -> [f32; 4] {
     ]
 }
 
-/// Maya-style texture SRT matrix (2x3) as used by NW4R.
-pub fn tex_mtx(s: [f32; 2], rot: f32, t: [f32; 2]) -> [[f32; 3]; 2] {
-    let (sr, cr) = rot.to_radians().sin_cos();
-    [
-        [s[0] * cr, -s[0] * sr, s[0] * ((-0.5 * cr) - (0.5 * sr - 0.5) - t[0])],
-        [s[1] * sr, s[1] * cr, s[1] * ((-0.5 * cr) + (0.5 * sr - 0.5) + t[1]) + 1.0],
-    ]
-}
-
 pub struct Bone {
     pub name: String,
     pub parent: Option<usize>,
@@ -168,15 +159,14 @@ fn arrays(d: &[u8], mdl: usize, sec: usize, is_color: bool) -> Vec<Array> {
 
 pub struct TexRef {
     pub name: String,
-    pub palette: String,
     pub wrap: [u32; 2],
-    pub min_filter: u32,
 }
 
 pub struct Layer {
     pub tex: TexRef,
+    /// GX texmap index this texture is bound to.
+    pub slot: u8,
     pub map_mode: u8,
-    pub srt: ([f32; 2], f32, [f32; 2]),
 }
 
 pub struct Material {
@@ -184,14 +174,80 @@ pub struct Material {
     pub xlu: bool,
     pub cull: u32,
     pub layers: Vec<Layer>,
-    pub mat_color: [u8; 4],
-    pub amb_color: [u8; 4],
-    pub vtx_color: bool,
-    pub lit: bool,
-    pub alpha_ref: Option<u8>,
-    pub blend: bool,
-    pub tev_colors: Vec<[i16; 4]>,
-    pub konst: Vec<[u8; 4]>,
+    /// Texture matrices per texcoord: (SRT, map mode).
+    pub texmtx: Vec<(([f32; 2], f32, [f32; 2]), u8)>,
+    /// Colour/alpha channel 0: (ctrl, material colour, ambient colour).
+    pub chan: [(u32, [u8; 4], [u8; 4]); 2],
+    pub ntexgen: u8,
+    pub nstages: u8,
+    /// Fog set index (-1 = no fog).
+    pub fog: i8,
+    /// BP register file from the shader and material display lists.
+    pub bp: Vec<u32>,
+    /// TEV colour registers (PREV, C0, C1, C2) and konst colours (K0..K3), RGBA, 0..255 scale.
+    pub regs: [[i16; 4]; 4],
+    pub konst: [[i16; 4]; 4],
+    /// XF texcoord generation registers.
+    pub texgen: [u32; 8],
+}
+
+impl Material {
+    pub fn lit(&self) -> bool { self.chan[0].0 & 2 != 0 }
+    pub fn vtx_color(&self) -> bool { self.chan[0].0 & 1 != 0 }
+    pub fn blend(&self) -> bool { self.bp[0x41] & 1 != 0 }
+    /// Alpha test reference when it acts as a simple cutout (GREATER/GEQUAL).
+    pub fn alpha_ref(&self) -> Option<u8> {
+        let v = self.bp[0xF3];
+        let (r0, c0) = ((v & 0xFF) as u8, (v >> 16) & 7);
+        ((c0 == 4 || c0 == 6) && r0 > 0).then_some(r0)
+    }
+}
+
+/// Executes the BP/XF register writes of a GX display list.
+fn run_dl(d: &[u8], start: usize, end: usize, m: &mut Material) {
+    let mut p = start;
+    let mut mask = 0xFF_FFFF;
+    let sx = |x: u32| ((x as i32) << 21 >> 21) as i16;
+    while p < end {
+        match d[p] {
+            0x61 if p + 5 <= end => {
+                let reg = d[p + 1] as usize;
+                let v = (d[p + 2] as u32) << 16 | (d[p + 3] as u32) << 8 | d[p + 4] as u32;
+                if reg == 0xFE {
+                    mask = v;
+                } else {
+                    let nv = (m.bp[reg] & !mask) | (v & mask);
+                    m.bp[reg] = nv;
+                    mask = 0xFF_FFFF;
+                    if (0xE0..=0xE7).contains(&reg) {
+                        let i = (reg - 0xE0) / 2;
+                        let file = if nv & 0x80_0000 != 0 { &mut m.konst } else { &mut m.regs };
+                        let (lo, hi) = (sx(nv & 0x7FF), sx((nv >> 12) & 0x7FF));
+                        if reg % 2 == 0 {
+                            file[i][0] = lo; // R
+                            file[i][3] = hi; // A
+                        } else {
+                            file[i][2] = lo; // B
+                            file[i][1] = hi; // G
+                        }
+                    }
+                }
+                p += 5;
+            }
+            0x10 if p + 5 <= end => {
+                let n = be16(d, p + 1) as usize + 1;
+                let addr = be16(d, p + 3) as usize;
+                for k in 0..n {
+                    if (0x1040..0x1048).contains(&(addr + k)) && p + 9 + 4 * k <= end {
+                        m.texgen[addr + k - 0x1040] = be32(d, p + 5 + 4 * k);
+                    }
+                }
+                p += 5 + 4 * n;
+            }
+            0x08 => p += 6,
+            _ => p += 1,
+        }
+    }
 }
 
 fn material(d: &[u8], o: usize) -> Material {
@@ -203,87 +259,39 @@ fn material(d: &[u8], o: usize) -> Material {
     let mut layers = vec![];
     for i in 0..ntex {
         let t = texs + i * 0x34;
-        let nm = |at: usize| match be32(d, t + at) {
-            0 => String::new(),
-            off => cstr(d, t + off as usize),
-        };
-        let tex = TexRef { name: nm(0), palette: nm(4), wrap: [be32(d, t + 0x18), be32(d, t + 0x1C)], min_filter: be32(d, t + 0x20) };
+        let tex = TexRef { name: cstr(d, t + be32(d, t) as usize), wrap: [be32(d, t + 0x18), be32(d, t + 0x1C)] };
         let id = be32(d, t + 0x10) as usize; // texmap slot
-        let srt = o + 0x1B0 + id.min(7) * 20;
-        let eff = o + 0x250 + id.min(7) * 0x34;
-        layers.push(Layer {
-            tex,
-            map_mode: d[eff + 2],
-            srt: ([bef(d, srt), bef(d, srt + 4)], bef(d, srt + 8), [bef(d, srt + 12), bef(d, srt + 16)]),
-        });
+        layers.push(Layer { tex, slot: id as u8, map_mode: d[o + 0x250 + id.min(7) * 0x34 + 2] });
     }
+    let texmtx = (0..8)
+        .map(|i| {
+            let (srt, eff) = (o + 0x1B0 + i * 20, o + 0x250 + i * 0x34);
+            (([bef(d, srt), bef(d, srt + 4)], bef(d, srt + 8), [bef(d, srt + 12), bef(d, srt + 16)]), d[eff + 2])
+        })
+        .collect();
     let ch = o + 0x3F0;
-    let ctrl = be32(d, ch + 12);
     let rgba = |at: usize| [d[at], d[at + 1], d[at + 2], d[at + 3]];
     let mut m = Material {
         name,
         xlu: flags & 0x8000_0000 != 0,
         cull,
         layers,
-        mat_color: rgba(ch + 4),
-        amb_color: rgba(ch + 8),
-        vtx_color: ctrl & 1 != 0,
-        lit: ctrl & 2 != 0,
-        alpha_ref: None,
-        blend: false,
-        tev_colors: vec![[0; 4]; 4],
-        konst: vec![[255; 4]; 4],
+        texmtx,
+        chan: [(be32(d, ch + 12), rgba(ch + 4), rgba(ch + 8)), (be32(d, ch + 16), rgba(ch + 4), rgba(ch + 8))],
+        ntexgen: d[o + 0x14],
+        nstages: d[o + 0x16],
+        fog: d[o + 0x1E] as i8,
+        bp: vec![0; 256],
+        regs: [[0; 4]; 4],
+        konst: [[255; 4]; 4],
+        texgen: [0; 8],
     };
-    // Material display list: BP registers for alpha test, blending and TEV colours.
+    // Shader (TEV stages, swap tables, konst selection) then the material's own list.
+    let shader = (o as i64 + be32(d, o + 0x28) as i32 as i64) as usize;
+    let shader_end = shader + be32(d, shader) as usize;
+    run_dl(d, shader + 0x20, shader_end.min(d.len()), &mut m);
     let dl = o + be32(d, o + 0x3C) as usize;
-    let mut p = dl;
-    let end = (dl + 0x180).min(o + be32(d, o) as usize);
-    let mut pending_ra = [[0i16; 2]; 4];
-    while p + 5 <= end {
-        match d[p] {
-            0x61 => {
-                let reg = d[p + 1];
-                let v = (d[p + 2] as u32) << 16 | (d[p + 3] as u32) << 8 | d[p + 4] as u32;
-                match reg {
-                    0xF3 => {
-                        let (r0, c0) = ((v & 0xFF) as u8, (v >> 16) & 7);
-                        // GX_GREATER=4, GX_GEQUAL=6 with a non-zero reference => cutout.
-                        if (c0 == 4 || c0 == 6) && r0 > 0 {
-                            m.alpha_ref = Some(r0);
-                        }
-                    }
-                    0x41 => m.blend = v & 1 != 0,
-                    0xE0..=0xE7 => {
-                        let idx = ((reg - 0xE0) / 2) as usize;
-                        let lo = (v & 0x7FF) as i16;
-                        let hi = ((v >> 12) & 0x7FF) as i16;
-                        let sx = |x: i16| if x & 0x400 != 0 { x - 0x800 } else { x };
-                        let konst = v & 0x80_0000 != 0;
-                        if reg % 2 == 0 {
-                            pending_ra[idx] = [sx(lo), sx(hi)]; // R, A
-                            if konst {
-                                m.konst[idx][0] = lo as u8;
-                                m.konst[idx][3] = hi as u8;
-                            }
-                        } else if konst {
-                            m.konst[idx][2] = lo as u8;
-                            m.konst[idx][1] = hi as u8;
-                        } else {
-                            m.tev_colors[idx] = [pending_ra[idx][0], sx(hi), sx(lo), pending_ra[idx][1]];
-                        }
-                    }
-                    _ => {}
-                }
-                p += 5;
-            }
-            0x10 => {
-                let n = be16(d, p + 1) as usize + 1;
-                p += 5 + 4 * n;
-            }
-            0x08 => p += 6,
-            _ => p += 1,
-        }
-    }
+    run_dl(d, dl, (dl + 0x180).min(o + be32(d, o) as usize), &mut m);
     m
 }
 
@@ -563,61 +571,56 @@ pub fn to_glb(models: &[Model], images: &HashMap<String, tex::Image>, anims: &[c
         let roots: Vec<usize> = m.bones.iter().enumerate().filter(|(_, b)| b.parent.is_none()).map(|(i, _)| base_node + i).collect();
         g.nodes.push(json!({ "name": m.name, "children": roots }));
         g.scenes.push((m.name.clone(), vec![model_root]));
-        // Materials.
+        // Materials: a plain PBR fallback plus the full GX state in `extras.gx`.
         let mut mat_ids = vec![];
         for mat in &m.materials {
+            let mut tex_for = |l: &Layer, g: &mut Gltf| -> Option<usize> {
+                let key = (l.tex.name.clone(), l.tex.wrap);
+                if let Some(&t) = tex_index.get(&key) {
+                    return Some(t);
+                }
+                let img = images.get(&l.tex.name)?;
+                let ii = *img_index.entry(l.tex.name.clone()).or_insert_with(|| g.image_png(&l.tex.name, &img.png().unwrap()));
+                let wrap = |w: u32| match w {
+                    0 => 33071,
+                    2 => 33648,
+                    _ => 10497,
+                };
+                g.samplers.push(json!({ "wrapS": wrap(l.tex.wrap[0]), "wrapT": wrap(l.tex.wrap[1]), "magFilter": 9729, "minFilter": 9987 }));
+                g.textures.push(json!({ "source": ii, "sampler": g.samplers.len() - 1 }));
+                tex_index.insert(key, g.textures.len() - 1);
+                Some(g.textures.len() - 1)
+            };
+            let layer_tex: Vec<Option<usize>> = mat.layers.iter().map(|l| tex_for(l, &mut g)).collect();
             let base_layer = mat.layers.iter().position(|l| l.map_mode == 0);
             let mut pbr = json!({ "metallicFactor": 0.0, "roughnessFactor": 1.0 });
-            let mut factor = [1.0f32; 4];
-            if !mat.vtx_color {
-                factor = mat.mat_color.map(|c| c as f32 / 255.0);
-            }
-            if let Some(li) = base_layer {
-                let l = &mat.layers[li];
-                let key = (l.tex.name.clone(), l.tex.wrap);
-                let ti = if let Some(&t) = tex_index.get(&key) {
-                    Some(t)
-                } else if let Some(img) = images.get(&l.tex.name) {
-                    let ii = *img_index.entry(l.tex.name.clone()).or_insert_with(|| g.image_png(&l.tex.name, &img.png().unwrap()));
-                    let wrap = |w: u32| match w {
-                        0 => 33071,
-                        2 => 33648,
-                        _ => 10497,
-                    };
-                    g.samplers.push(json!({ "wrapS": wrap(l.tex.wrap[0]), "wrapT": wrap(l.tex.wrap[1]), "magFilter": 9729, "minFilter": 9987 }));
-                    g.textures.push(json!({ "source": ii, "sampler": g.samplers.len() - 1 }));
-                    tex_index.insert(key, g.textures.len() - 1);
-                    Some(g.textures.len() - 1)
-                } else {
-                    None
-                };
-                if let Some(ti) = ti {
-                    pbr["baseColorTexture"] = json!({ "index": ti });
-                }
+            let factor = if mat.vtx_color() { [1.0f32; 4] } else { mat.chan[0].1.map(|c| c as f32 / 255.0) };
+            if let Some(ti) = base_layer.and_then(|li| layer_tex[li]) {
+                pbr["baseColorTexture"] = json!({ "index": ti });
             }
             pbr["baseColorFactor"] = json!(factor);
             let has_alpha = base_layer.and_then(|li| images.get(&mat.layers[li].tex.name)).is_some_and(|i| i.has_alpha());
             let mut mj = json!({ "name": mat.name, "pbrMetallicRoughness": pbr, "doubleSided": mat.cull == 0 });
-            if (mat.xlu || mat.blend) && (has_alpha || factor[3] < 1.0) {
+            if (mat.xlu || mat.blend()) && (has_alpha || factor[3] < 1.0) {
                 mj["alphaMode"] = "BLEND".into();
-            } else if let Some(r) = mat.alpha_ref.filter(|_| has_alpha) {
+            } else if let Some(r) = mat.alpha_ref().filter(|_| has_alpha) {
                 mj["alphaMode"] = "MASK".into();
                 mj["alphaCutoff"] = json!(r as f32 / 255.0);
-            } else if has_alpha && (mat.xlu || mat.alpha_ref.is_some()) {
-                mj["alphaMode"] = "MASK".into();
             }
-            if !mat.lit {
+            if !mat.lit() {
                 mj["extensions"] = json!({ "KHR_materials_unlit": {} });
             }
-            mj["extras"] = json!({
-                "lit": mat.lit, "xlu": mat.xlu, "amb": mat.amb_color, "mat": mat.mat_color,
-                "layers": mat.layers.iter().map(|l| json!({"tex": l.tex.name, "map": l.map_mode})).collect::<Vec<_>>(),
-                "konst": mat.konst, "tev": mat.tev_colors,
-            });
+            let bp: serde_json::Map<String, Value> = mat.bp.iter().enumerate().filter(|(_, v)| **v != 0).map(|(r, v)| (format!("{r:02x}"), json!(v))).collect();
+            mj["extras"] = json!({ "gx": {
+                "name": mat.name, "xlu": mat.xlu, "cull": mat.cull, "stages": mat.nstages, "texgens": mat.ntexgen, "fog": mat.fog,
+                "chan": mat.chan.iter().map(|c| json!([c.0, c.1, c.2])).collect::<Vec<_>>(),
+                "maps": mat.layers.iter().zip(&layer_tex).map(|(l, t)| json!({ "slot": l.slot, "tex": t, "name": l.tex.name })).collect::<Vec<_>>(),
+                "texmtx": mat.texmtx.iter().take(mat.ntexgen as usize).map(|(srt, mode)| json!({ "srt": [srt.0[0], srt.0[1], srt.1, srt.2[0], srt.2[1]], "mode": mode })).collect::<Vec<_>>(),
+                "texgen": mat.texgen, "bp": bp, "regs": mat.regs, "konst": mat.konst,
+            }});
             g.materials.push(mj);
             mat_ids.push(g.materials.len() - 1);
-            let srt = base_layer.map(|li| mat.layers[li].srt).unwrap_or(([1.0, 1.0], 0.0, [0.0, 0.0]));
-            info.insert(mat.name.clone(), json!({ "srt": [srt.0[0], srt.0[1], srt.1, srt.2[0], srt.2[1]] }));
+            info.insert(mat.name.clone(), json!({}));
         }
         // Meshes: one glTF mesh per draw call.
         let mut skin_joints: Option<usize> = None;
@@ -626,19 +629,13 @@ pub fn to_glb(models: &[Model], images: &HashMap<String, tex::Image>, anims: &[c
                 continue;
             }
             let mat = &m.materials[*mi];
-            let base_layer = mat.layers.iter().position(|l| l.map_mode == 0);
-            // Bake the static texture SRT of the base layer into its UVs.
-            let tm = base_layer.map(|li| {
-                let (s, r, t) = mat.layers[li].srt;
-                tex_mtx(s, r, t)
-            });
-            let uv_set = base_layer.unwrap_or(0).min(1);
             let bone_of = |mtx: u16| m.mtx_bone.get(mtx as usize).copied().unwrap_or(-1);
             let single_bone = sh.single.map(bone_of).filter(|&b| b >= 0).map(|b| b as usize);
             let mut pos = vec![];
             let mut nrm = vec![];
             let mut clr = vec![];
             let mut uv = vec![];
+            let mut uv1 = vec![];
             let mut joints = vec![];
             let mut weights = vec![];
             for v in &sh.verts {
@@ -657,12 +654,8 @@ pub fn to_glb(models: &[Model], images: &HashMap<String, tex::Image>, anims: &[c
                 let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
                 nrm.extend_from_slice(&[n[0] / l, n[1] / l, n[2] / l]);
                 clr.extend_from_slice(&v.clr);
-                let [s, t] = v.uv[uv_set];
-                let (s, t) = match tm {
-                    Some(m) => (m[0][0] * s + m[0][1] * t + m[0][2], m[1][0] * s + m[1][1] * t + m[1][2]),
-                    None => (s, t),
-                };
-                uv.extend_from_slice(&[s, t]);
+                uv.extend_from_slice(&v.uv[0]);
+                uv1.extend_from_slice(&v.uv[1]);
                 if sh.single.is_none() {
                     let mut jw: Vec<(u16, f32)> = match m.envelopes.get(&v.mtx) {
                         Some(env) => env.iter().map(|&(mtx, w)| (bone_of(mtx).max(0) as u16, w)).collect(),
@@ -680,6 +673,9 @@ pub fn to_glb(models: &[Model], images: &HashMap<String, tex::Image>, anims: &[c
                 "NORMAL": g.floats(&nrm, "VEC3", 3, false, Some(34962)),
                 "TEXCOORD_0": g.floats(&uv, "VEC2", 2, false, Some(34962)),
             });
+            if sh.has[3] {
+                attrs["TEXCOORD_1"] = g.floats(&uv1, "VEC2", 2, false, Some(34962)).into();
+            }
             if sh.has[1] {
                 attrs["COLOR_0"] = g.floats(&clr, "VEC4", 4, false, Some(34962)).into();
             }

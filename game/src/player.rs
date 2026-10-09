@@ -4,7 +4,9 @@ use crate::collide::Collision;
 use crate::input::Controls;
 use crate::world::MainCamera;
 use crate::{AppState, Mode};
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy::prelude::*;
+use bevy::world_serialization::WorldInstanceReady;
 
 const HEIGHT: f32 = 40.0;
 const RADIUS: f32 = 10.0;
@@ -53,7 +55,8 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, col: Res<Collision>, 
             c.spawn((
                 WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/walker.glb"))),
                 Transform::from_scale(Vec3::splat(3.5)),
-            ));
+            ))
+            .observe(no_culling);
             c.spawn((
                 WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/parachute.glb"))),
                 Transform::from_xyz(0.0, HEIGHT, 0.0),
@@ -61,6 +64,15 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, col: Res<Collision>, 
                 Parachute,
             ));
         });
+}
+
+/// Skinned meshes keep their bind-pose bounds; never cull them.
+pub fn no_culling(ev: On<WorldInstanceReady>, children: Query<&Children>, meshes: Query<(), With<Mesh3d>>, mut commands: Commands) {
+    for e in children.iter_descendants(ev.entity) {
+        if meshes.contains(e) {
+            commands.entity(e).insert(NoFrustumCulling);
+        }
+    }
 }
 
 fn walk(c: Res<Controls>, rig: Res<CamRig>, col: Res<Collision>, time: Res<Time>, mut q: Query<(&mut Player, &mut Transform)>) {
