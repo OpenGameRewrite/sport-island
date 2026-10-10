@@ -23,13 +23,22 @@ pub struct UiFont(pub FontSource);
 pub struct Texts {
     pub code: String,
     map: HashMap<u32, String>,
+    /// Pilotwings Resort strings by key, when that add-on was extracted.
+    pwr: HashMap<String, String>,
 }
 
 impl Texts {
     pub fn load(code: &str) -> Self {
         let raw: HashMap<String, String> = crate::read_json(&format!("text/{code}.json"));
         let map = raw.into_iter().filter_map(|(k, v)| Some((u32::from_str_radix(&k, 16).ok()?, v))).collect();
-        Self { code: code.to_string(), map }
+        let pwr = std::fs::read(crate::asset_dir().join(format!("pwr/text/{code}.json"))).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        Self { code: code.to_string(), map, pwr }
+    }
+
+    /// A Pilotwings Resort string; its inline icon escapes become the info glyph.
+    pub fn pwr(&self, key: &str) -> Option<String> {
+        let s = self.pwr.get(key)?;
+        Some(s.replace("\\ipoint_icon_small", "ⓘ "))
     }
 
     /// A BMG message with icon glyphs replaced by readable labels.

@@ -1,5 +1,6 @@
 //! i-points: the 80 sightseeing spots of Island Flyover, each with a message
-//! for daytime, evening and night (240 readings in total).
+//! for daytime, evening and night (240 readings in total), plus the spots
+//! Pilotwings Resort added when that optional add-on is installed.
 
 use crate::input::Controls;
 use crate::lang::Texts;
@@ -12,7 +13,8 @@ use bevy::prelude::*;
 use bevy::world_serialization::WorldInstanceReady;
 use serde::Deserialize;
 
-pub const READINGS: usize = 240;
+/// Upper bound for saved readings (three per point); the add-on appends points.
+pub const MAX_READINGS: usize = 3 * 128;
 
 #[derive(Deserialize, Clone)]
 pub struct IPointDef {
@@ -22,6 +24,24 @@ pub struct IPointDef {
     /// BMG message group: name is `msg << 8`, readings are `+1..+3`.
     pub msg: u32,
     pub pos: Vec3,
+    /// Pilotwings Resort eyepoint id: its text for added points, and for shared
+    /// points when built with the `pwr-text` feature.
+    #[serde(default)]
+    pub pwr: Option<u32>,
+}
+
+impl IPointDef {
+    fn pwr_text(&self, texts: &Texts, part: &str) -> Option<String> {
+        let id = self.pwr?;
+        if self.msg != 0 && !cfg!(feature = "pwr-text") { return None; }
+        texts.pwr(&format!("Eyepoint:{id}_{part}"))
+    }
+    pub fn name(&self, texts: &Texts, pad: bool) -> String {
+        self.pwr_text(texts, "friendly_name").unwrap_or_else(|| texts.msg(name_id(self), pad))
+    }
+    pub fn reading(&self, texts: &Texts, pad: bool, time: u8) -> String {
+        self.pwr_text(texts, ["day", "evening", "night"][time as usize % 3]).unwrap_or_else(|| texts.msg(name_id(self) + 1 + time as u32, pad))
+    }
 }
 
 #[derive(Resource)]
@@ -67,7 +87,8 @@ struct MessageImage;
 struct Spark;
 
 pub fn plugin(app: &mut App) {
-    let defs: Vec<IPointDef> = crate::read_json("data/ipoints.json");
+    let mut defs: Vec<IPointDef> = crate::read_json("data/ipoints.json");
+    crate::pwr::add_ipoints(&mut defs);
     app.insert_resource(IPoints(defs))
         .init_resource::<Shown>()
         .add_systems(Startup, setup_effect)
@@ -254,9 +275,10 @@ fn show_message(
     **boxv = if visible { Visibility::Inherited } else { Visibility::Hidden };
     if let (true, Some(i)) = (visible, shown.index) {
         let def = &points.0[i];
-        title.set_if_neq(Text::new(format!("ⓘ  {}", texts.msg(name_id(def), c.pad))));
-        body.set_if_neq(Text::new(texts.msg(name_id(def) + 1 + tod.0 as u32, c.pad)));
-        image.image = assets.load(format!("ui/WS2_pln_picture_{i:02}.png"));
+        title.set_if_neq(Text::new(format!("ⓘ  {}", def.name(&texts, c.pad))));
+        body.set_if_neq(Text::new(def.reading(&texts, c.pad, tod.0)));
+        // Only the Wii points have photos.
+        image.image = if def.msg != 0 { assets.load(format!("ui/WS2_pln_picture_{i:02}.png")) } else { Handle::default() };
     }
 }
 
@@ -273,8 +295,8 @@ fn spark(shown: Res<Shown>, time: Res<Time>, camera: Single<(&Camera, &GlobalTra
     spark.0.left = px(pos.x); spark.0.top = px(pos.y);
 }
 
-fn counter(save: Res<Save>, tod: Res<TimeOfDay>, mut text: Single<&mut Text, With<Counter>>) {
-    text.set_if_neq(Text::new(format!("ⓘ {} / 80", save.collected.iter().filter(|r| **r % 3 == tod.0 as u16).count())));
+fn counter(save: Res<Save>, tod: Res<TimeOfDay>, points: Res<IPoints>, mut text: Single<&mut Text, With<Counter>>) {
+    text.set_if_neq(Text::new(format!("ⓘ {} / {}", save.collected.iter().filter(|r| **r % 3 == tod.0 as u16).count(), points.0.len())));
 }
 
 fn hint(save: Res<Save>, texts: Res<Texts>, controls: Res<Controls>, mode: Res<State<crate::Mode>>, menu: Res<crate::menu::Menu>, mut hint: Single<&mut Text, With<BoardHint>>) {

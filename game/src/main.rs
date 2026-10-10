@@ -12,6 +12,7 @@ mod menu;
 mod particles;
 mod plane;
 mod player;
+mod pwr;
 mod save;
 mod scenery;
 mod sound;
@@ -67,6 +68,6 @@ fn main() {
         .init_state::<AppState>()
         .init_state::<Mode>()
         .add_plugins((save::plugin, lang::plugin, input::plugin, collide::plugin, gx::plugin, particles::plugin, world::plugin))
-        .add_plugins((player::plugin, plane::plugin, ipoint::plugin, menu::plugin, scenery::plugin, sound::plugin, debug::plugin))
+        .add_plugins((player::plugin, plane::plugin, ipoint::plugin, menu::plugin, scenery::plugin, sound::plugin, debug::plugin, pwr::plugin))
         .run();
 }

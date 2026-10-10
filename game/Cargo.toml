@@ -7,3 +7,8 @@ edition = "2024"
 bevy = { version = "0.20.0", features = ["system_font_discovery", "wav"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+
+[features]
+# With the Pilotwings Resort add-on installed, show its wording for the
+# i-points both games share instead of the Wii game's.
+pwr-text = []

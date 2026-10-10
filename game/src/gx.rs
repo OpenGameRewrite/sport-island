@@ -105,6 +105,26 @@ pub fn shaded(color: Color, globals: Handle<ShaderBuffer>) -> GxMaterial {
     GxMaterial { tev, t0: None, t1: None, t2: None, t3: None, t4: None, t5: None, t6: None, t7: None, globals, alpha_mode: AlphaMode::Opaque, srt: [[1.0, 1.0, 0.0, 0.0, 0.0]; 8], base: [Vec4::ONE; 11] }
 }
 
+/// A texture modulated by the lit, fogged material colour: what non-Wii
+/// models (the Pilotwings Resort add-on) need to sit in the island's lighting.
+pub fn textured(texture: Option<Handle<Image>>, cutout: bool, globals: Handle<ShaderBuffer>) -> GxMaterial {
+    let mut m = shaded(Color::WHITE, globals);
+    if texture.is_some() {
+        // TEXC × RASC and TEXA × RASA, texmap 0 from UV0, colour channel 0.
+        m.tev.stages[0] = UVec4::new(15 << 12 | 8 << 8 | 10 << 4 | 15 | 1 << 19, 7 << 13 | 4 << 10 | 5 << 7 | 7 << 4 | 1 << 19, 1 << 6, 0);
+        m.tev.texgen[0] = UVec4::new(5, 0, 0, 0);
+        [m.tev.texmtx[0], m.tev.texmtx[1]] = tex_mtx([1.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+    if cutout {
+        // Alpha GREATER 127, second comparison ALWAYS.
+        m.tev.alpha_test = UVec4::new(4 | 7 << 4, 127, 0, 0);
+        m.alpha_mode = AlphaMode::Mask(0.0);
+    }
+    m.tev.chan.w = 1;
+    m.t0 = texture;
+    m
+}
+
 /// NW4R's Maya-convention texture matrix. Scale pivots on the texture centre:
 /// without rotation, u' = sx (u - 0.5 - tx) + 0.5 and t' = sy (t - 0.5 + ty) + 0.5.
 /// The firework burst relies on it: its texture holds one mirrored quadrant

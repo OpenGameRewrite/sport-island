@@ -70,7 +70,7 @@ pub fn plugin(app: &mut App) {
         *v = if v.is_finite() { v.clamp(0.25, 1.5) } else { 1.0 };
     }
     save.ground_assist = if save.ground_assist.is_finite() { save.ground_assist.clamp(0.0, 1.0) } else { 1.0 };
-    save.collected.retain(|i| (*i as usize) < crate::ipoint::READINGS);
+    save.collected.retain(|i| (*i as usize) < crate::ipoint::MAX_READINGS);
     app.insert_resource::<Save>(save);
 }
 

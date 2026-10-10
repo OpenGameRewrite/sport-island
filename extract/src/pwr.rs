@@ -538,7 +538,7 @@ fn to_glb(pwr: &Pwr, containers: &[&str], meshes: &[Mesh], joints: &[(String, [f
         let mat = match materials.get(&m.material) {
             Some(&i) => i,
             None => {
-                let mut mj = json!({ "name": m.material, "pbrMetallicRoughness": { "metallicFactor": 0.0, "roughnessFactor": 0.8 }, "doubleSided": true });
+                let mut mj = json!({ "name": m.material, "pbrMetallicRoughness": { "metallicFactor": 0.0, "roughnessFactor": 0.8 }, "doubleSided": false });
                 if let Some((tex, img)) = pwr.base_texture(containers, &m.material) {
                     if let Ok(png) = img.png() {
                         let image = g.image_png(&tex, &png);
@@ -552,12 +552,22 @@ fn to_glb(pwr: &Pwr, containers: &[&str], meshes: &[Mesh], joints: &[(String, [f
                 g.materials.len() - 1
             }
         };
+        // The 3DS draws these unculled. Bevy culls back faces, so add the
+        // reverse side as real geometry with flipped normals.
+        let back = |v: &[[f32; 3]]| v.iter().map(|n| n.map(|c| -c)).collect::<Vec<_>>();
+        let twice = |v: &[[f32; 3]]| [v, v].concat();
+        let n = m.pos.len() as u32;
+        let pos = twice(&m.pos);
+        let nrm = [m.nrm.clone(), back(&m.nrm)].concat();
+        let uv = [m.uv.clone(), m.uv.clone()].concat();
+        let color = [m.color.clone(), m.color.clone()].concat();
+        let idx: Vec<u32> = m.idx.iter().copied().chain(m.idx.chunks(3).flat_map(|t| [t[0] + n, t[2] + n, t[1] + n])).collect();
         let mut attrs = Map::new();
-        attrs.insert("POSITION".into(), json!(g.floats(&m.pos.concat(), "VEC3", 3, true, Some(34962))));
-        if m.nrm.len() == m.pos.len() { attrs.insert("NORMAL".into(), json!(g.floats(&m.nrm.concat(), "VEC3", 3, false, Some(34962)))); }
-        if m.uv.len() == m.pos.len() { attrs.insert("TEXCOORD_0".into(), json!(g.floats(&m.uv.concat(), "VEC2", 2, false, Some(34962)))); }
-        if m.color.len() == m.pos.len() { attrs.insert("COLOR_0".into(), json!(g.floats(&m.color.concat(), "VEC4", 4, false, Some(34962)))); }
-        let indices = g.u32s(&m.idx);
+        attrs.insert("POSITION".into(), json!(g.floats(&pos.concat(), "VEC3", 3, true, Some(34962))));
+        if nrm.len() == pos.len() { attrs.insert("NORMAL".into(), json!(g.floats(&nrm.concat(), "VEC3", 3, false, Some(34962)))); }
+        if uv.len() == pos.len() { attrs.insert("TEXCOORD_0".into(), json!(g.floats(&uv.concat(), "VEC2", 2, false, Some(34962)))); }
+        if color.len() == pos.len() { attrs.insert("COLOR_0".into(), json!(g.floats(&color.concat(), "VEC4", 4, false, Some(34962)))); }
+        let indices = g.u32s(&idx);
         prims.push(json!({ "attributes": attrs, "indices": indices, "material": mat }));
     }
     g.meshes.push(json!({ "name": name, "primitives": prims }));
