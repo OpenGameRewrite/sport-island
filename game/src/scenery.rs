@@ -56,7 +56,14 @@ struct Target { radius: f32, respawn: f32 }
 #[derive(Component)]
 struct Ambient { kind: u16, range: f32, next: f32 }
 #[derive(Component)]
-struct Firework { phase: f32, rng: u32, base: Vec3, display: u8 }
+struct Firework { phase: f32, rng: u32, base: Vec3, display: u8, material: Option<Handle<crate::gx::GxMaterial>>, variant: usize }
+/// The burst's original PAT0 flipbook and CLR0 colour variants.
+#[derive(Resource, Default)]
+struct FireworkAnim { frames: Vec<Handle<Image>>, colors: Vec<crate::gx::ColorAnimation> }
+#[derive(Deserialize)]
+struct PatAnim { materials: HashMap<String, HashMap<String, Vec<String>>> }
+#[derive(Deserialize)]
+struct FireworkJson { pat: Vec<PatAnim>, clr: Vec<crate::gx::ColorAnimation> }
 #[derive(Component)]
 struct Flock { center: Vec3, radius: f32, phase: f32 }
 
@@ -81,6 +88,14 @@ pub fn plugin(app: &mut App) {
 
 #[allow(clippy::too_many_arguments)]
 fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<Assets<AnimationGraph>>, island: Res<Island>, points: Res<IPoints>, sounds: Res<Sounds>) {
+    let fw: FireworkJson = crate::read_json("models/fireworks.json");
+    let frames = fw.pat.first().and_then(|p| p.materials.get("fireWorks")).and_then(|s| s.get("0")).cloned().unwrap_or_default();
+    // Frames are one quadrant; the original sampler mirrors it across the quad.
+    let load = |t: &String| assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| {
+        let mirror = bevy::image::ImageAddressMode::MirrorRepeat;
+        s.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor { address_mode_u: mirror, address_mode_v: mirror, ..bevy::image::ImageSamplerDescriptor::linear() });
+    }).load(format!("textures/{t}.png"));
+    commands.insert_resource(FireworkAnim { frames: frames.iter().map(load).collect(), colors: fw.clr });
     let mut clips = HashMap::new();
     let car_motion: CarMotion = crate::read_json("models/car.json");
     for (i, (p, mask)) in island.0.iter().enumerate() {
@@ -107,7 +122,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<As
             commands.entity(root).with_children(|c| {
                 let graph = graphs.add(graph);
                 for slot in 0..12 {
-                    c.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/fireworks.glb"))), Visibility::Hidden, Animated { graph: graph.clone(), node, phase: 0.0, speed: 1.0 }, Firework { phase: -1.0, rng: (i as u32*12+slot+1).wrapping_mul(2654435761), base: p.pos, display: if p.pos.x > 0.0 {0} else {1} })).observe(start_animation);
+                    c.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/fireworks.glb"))), Visibility::Hidden, Animated { graph: graph.clone(), node, phase: 0.0, speed: 1.0 }, Firework { phase: -1.0, rng: (i as u32*12+slot+1).wrapping_mul(2654435761), base: p.pos, display: if p.pos.x > 0.0 {0} else {1}, material: None, variant: 0 })).observe(start_animation);
                 }
             });
             continue;
@@ -279,7 +294,8 @@ mod tests {
         w.insert_resource(TimeOfDay(2)); w.init_resource::<Messages<Sound>>();
         w.spawn((crate::world::MainCamera, GlobalTransform::from_translation(Vec3::ZERO)));
         let seed = (0..1000).find(|s| {let mut s=*s; random(&mut s)%90==0}).unwrap();
-        let mut spawn = |base, display| w.spawn((Firework {phase:-1.0,rng:seed,base,display}, Animated {graph:default(),node:default(),phase:0.0,speed:1.0}, Transform::default(), Visibility::Hidden)).id();
+        w.init_resource::<FireworkAnim>(); w.init_resource::<Assets<crate::gx::GxMaterial>>();
+        let mut spawn = |base, display| w.spawn((Firework {phase:-1.0,rng:seed,base,display,material:None,variant:0}, Animated {graph:default(),node:default(),phase:0.0,speed:1.0}, Transform::default(), Visibility::Hidden)).id();
         let near = spawn(Vec3::ZERO,0); let far = spawn(Vec3::X*10000.0,1);
         w.run_system_once(fireworks).unwrap();
         assert!(w.get::<Firework>(near).unwrap().phase<0.0);
@@ -349,7 +365,8 @@ fn ambient(mut commands: Commands, time: Res<Time>, tod: Res<TimeOfDay>, assets:
 /// Original suppresses displays within 5500 units of an aircraft. Otherwise
 /// it switches between either/both displays at 1/240 or 1/480 per tick. Each
 /// display has twelve burst slots (1/90, or 1/120 with both displays active).
-fn fireworks(tod: Res<TimeOfDay>, camera: Single<&GlobalTransform, With<crate::world::MainCamera>>, planes: Query<&GlobalTransform, With<Plane>>, children: Query<&Children>, mut players: Query<&mut AnimationPlayer>, mut q: Query<(Entity, &mut Firework, &Animated, &mut Transform, &mut Visibility)>, mut sounds: MessageWriter<Sound>, mut schedule: Local<Option<(u8,u32)>>) {
+#[allow(clippy::too_many_arguments)]
+fn fireworks(tod: Res<TimeOfDay>, camera: Single<&GlobalTransform, With<crate::world::MainCamera>>, planes: Query<&GlobalTransform, With<Plane>>, children: Query<&Children>, mut players: Query<&mut AnimationPlayer>, mut q: Query<(Entity, &mut Firework, &Animated, &mut Transform, &mut Visibility)>, mut sounds: MessageWriter<Sound>, mut schedule: Local<Option<(u8,u32)>>, anim: Res<FireworkAnim>, mut meshes: Query<&mut MeshMaterial3d<crate::gx::GxMaterial>>, mut materials: ResMut<Assets<crate::gx::GxMaterial>>) {
     let (mask,rng) = schedule.get_or_insert((3,0x125ea));
     let pos = planes.single().map_or(camera.translation(), |p| p.translation());
     let near = q.iter().fold(0, |bits,(_,f,_,_,_)| bits | if pos.distance(f.base)<5500.0 {1<<f.display} else {0});
@@ -363,7 +380,7 @@ fn fireworks(tod: Res<TimeOfDay>, camera: Single<&GlobalTransform, With<crate::w
             f.phase = 0.0;
             let scale = 0.5 + (random(&mut f.rng) % 65536) as f32/65536.0*0.2;
             t.scale = Vec3::splat(scale);
-            t.rotation = Quat::from_rotation_z((random(&mut f.rng) % 65536) as f32/65536.0*std::f32::consts::TAU);
+            f.variant = random(&mut f.rng) as usize % anim.colors.len().max(1);
             // ponytail: burst jitter extent remains approximate; original color tracks are not yet rendered.
             t.translation = Vec3::new((random(&mut f.rng)%601) as f32-300.0, (random(&mut f.rng)%301) as f32-150.0, (random(&mut f.rng)%601) as f32-300.0);
             *visibility = Visibility::Inherited;
@@ -372,7 +389,24 @@ fn fireworks(tod: Res<TimeOfDay>, camera: Single<&GlobalTransform, With<crate::w
             sounds.write(Sound::effect("SE_CMN_FIREWORKS_EXPLODE", Some(f.base+t.translation)));
         } else {
             f.phase += 1.0/60.0;
-            if f.phase >= 79.0/60.0 { *visibility = Visibility::Hidden; f.phase = -1.0; }
+            if f.phase >= 79.0/60.0 { *visibility = Visibility::Hidden; f.phase = -1.0; continue; }
+        }
+        // Each burst owns a material copy so its flipbook frame and colours are independent.
+        if f.material.is_none() {
+            let Some(e) = children.iter_descendants(entity).find(|e| meshes.contains(*e)) else { continue };
+            let Some(copy) = meshes.get(e).ok().and_then(|m| materials.get(&m.0)).cloned() else { continue };
+            let handle = materials.add(copy);
+            meshes.get_mut(e).unwrap().0 = handle.clone();
+            f.material = Some(handle);
+        }
+        let frame = (f.phase * 60.0) as usize;
+        if let Some(mut m) = f.material.as_ref().and_then(|h| materials.get_mut(h)) {
+            if let Some(tex) = anim.frames.get(frame.min(anim.frames.len().saturating_sub(1))) { m.t0 = Some(tex.clone()); }
+            if let Some(targets) = anim.colors.get(f.variant).and_then(|c| c.materials.get("fireWorks")) {
+                for (&target, track) in targets {
+                    if let Some(&v) = track.values.get(frame.min(track.values.len().saturating_sub(1))) { m.set_color(target, track.mask, v); }
+                }
+            }
         }
     }
 }

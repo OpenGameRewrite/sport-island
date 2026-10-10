@@ -58,6 +58,8 @@ pub struct GxMaterial {
     pub alpha_mode: AlphaMode,
     /// Texture SRTs (scale x/y, rotation degrees, translation x/y) per texcoord, for animation.
     pub srt: [[f32; 5]; 8],
+    /// Unanimated CLR0 targets (material, -, ambient, -, C0..C2, K0..K3) for masked colour animation.
+    pub base: [Vec4; 11],
 }
 
 impl Material for GxMaterial {
@@ -66,6 +68,23 @@ impl Material for GxMaterial {
 }
 
 impl GxMaterial {
+    /// Applies one CLR0 value (big-endian RGBA8). Mask bits keep the original colour.
+    pub fn set_color(&mut self, target: usize, mask: u32, value: u32) {
+        let base = self.base[target.min(10)];
+        let c = Vec4::from_array(std::array::from_fn(|i| {
+            let m = (mask >> (24 - 8 * i)) & 0xFF;
+            let b = (base[i] * 255.0).round() as u32;
+            ((b & m) | ((value >> (24 - 8 * i)) & 0xFF & !m)) as f32 / 255.0
+        }));
+        match target {
+            0 => self.tev.mat_color = c,
+            2 => self.tev.amb_color = c,
+            4..=6 => self.tev.regs[target - 3] = c,
+            7..=10 => self.tev.konst[target - 7] = c,
+            _ => {}
+        }
+    }
+
     pub fn set_srt(&mut self, i: usize, srt: [f32; 5]) {
         self.srt[i] = srt;
         let m = tex_mtx(srt);
@@ -125,13 +144,15 @@ pub struct GxEnv {
     pub sun_dir: Vec3,
     pub sun_color: Vec3,
     pub ambient: Vec3,
-    pub fog_color: Vec3,
-    pub fog: Vec2,
+    /// The scene's first two fogs (materials select one by index): (colour, (start, end, type)).
+    pub fogs: [(Vec3, Vec3); 2],
 }
 
-/// Named materials, so animations can find them: (model path, material name) -> handle.
+/// Converted materials: (model path, material name, glTF material label) -> handle.
+/// The label matters: different scenes reuse names (the day and evening skies'
+/// `mt_za_cloud` have different textures).
 #[derive(Resource, Default)]
-pub struct GxMaterials(pub HashMap<(String, String), Handle<GxMaterial>>);
+pub struct GxMaterials(pub HashMap<(String, String, String), Handle<GxMaterial>>);
 
 #[derive(Deserialize)]
 struct TextureAnimation {
@@ -140,38 +161,68 @@ struct TextureAnimation {
     looping: bool,
     materials: HashMap<String, HashMap<usize, Vec<[f32; 5]>>>,
 }
-#[derive(Deserialize)]
-struct ModelAnimations { srt: Vec<TextureAnimation> }
+/// CLR0 track for one material target: values per frame, mask bits keep the original.
+#[derive(Deserialize, Clone)]
+pub struct ColorTrack {
+    pub mask: u32,
+    pub values: Vec<u32>,
+}
+#[derive(Deserialize, Clone)]
+pub struct ColorAnimation {
+    #[serde(rename = "loop")]
+    pub looping: bool,
+    pub materials: HashMap<String, HashMap<usize, ColorTrack>>,
+}
+#[derive(Deserialize, Default)]
+struct ModelAnimations {
+    #[serde(default)]
+    srt: Vec<TextureAnimation>,
+    #[serde(default)]
+    clr: Vec<ColorAnimation>,
+}
 #[derive(Resource, Default)]
-struct TextureAnimations(HashMap<String, Vec<TextureAnimation>>);
+struct TextureAnimations(HashMap<String, ModelAnimations>);
+
+/// NW4R bone billboard mode from a glTF node's extras.
+#[derive(Component)]
+pub struct Billboard(u32);
 
 pub fn plugin(app: &mut App) {
     embedded_asset!(app, "gx.wesl");
-    let globals = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![[0f32; 4]; 9]));
+    let globals = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![[0f32; 4]; 11]));
     app.add_plugins(MaterialPlugin::<GxMaterial>::default())
         .insert_resource(GxGlobals(globals))
         .init_resource::<GxEnv>()
         .init_resource::<GxMaterials>()
         .init_resource::<TextureAnimations>()
-        .add_systems(Update, (convert, animate_textures, fix_image_formats).chain())
+        .add_systems(Update, (convert, animate_textures, fix_image_formats, tag_billboards).chain())
+        .add_systems(PostUpdate, billboards.after(bevy::app::AnimationSystems).before(TransformSystems::Propagate))
         // After propagation, so lighting/fog use this frame's camera, not last frame's.
         .add_systems(PostUpdate, update_globals.after(TransformSystems::Propagate));
 }
 
 fn animate_textures(time: Res<Time>, cache: Res<GxMaterials>, mut animations: ResMut<TextureAnimations>, mut materials: ResMut<Assets<GxMaterial>>) {
-    for ((path, name), handle) in &cache.0 {
-        let tracks = animations.0.entry(path.clone()).or_insert_with(|| {
+    let frame = time.elapsed_secs() * 60.0;
+    for ((path, name, _), handle) in &cache.0 {
+        let anims = animations.0.entry(path.clone()).or_insert_with(|| {
             let metadata = crate::asset_dir().join(path).with_extension("json");
-            std::fs::read(metadata).ok().and_then(|b| serde_json::from_slice::<ModelAnimations>(&b).ok()).map_or_else(Vec::new, |v| v.srt)
+            std::fs::read(metadata).ok().and_then(|b| serde_json::from_slice::<ModelAnimations>(&b).ok()).unwrap_or_default()
         });
+        // Only looping colour tracks are ambient; one-shots (fireworks) are driven by their owners.
+        let colors: Vec<_> = anims.clr.iter().filter(|a| a.looping).filter_map(|a| a.materials.get(name)).collect();
+        if colors.is_empty() && !anims.srt.iter().any(|t| t.materials.contains_key(name)) { continue; }
         let Some(mut material) = materials.get_mut(handle) else { continue };
-        for track in tracks {
+        for targets in colors {
+            for (&target, track) in targets {
+                if let Some(&v) = track.values.get(frame as usize % track.values.len().max(1)) { material.set_color(target, track.mask, v); }
+            }
+        }
+        for track in &anims.srt {
             // The three sea variants share material names. Use the original base-water track.
             if matches!(track.name.as_str(), "WS2_common_sea_P" | "WS2_common_sea_S") { continue; }
             let Some(slots) = track.materials.get(name) else { continue };
             for (&slot, frames) in slots {
                 if slot >= 8 || frames.is_empty() { continue; }
-                let frame = time.elapsed_secs() * 60.0;
                 let span = (frames.len() - 1).max(1) as f32;
                 let frame = if track.looping { frame % span } else { frame.min(span) };
                 let a = (frame.floor() as usize).min(frames.len() - 1);
@@ -235,9 +286,12 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
     } else {
         AlphaMode::Opaque
     };
-    let mut flags = if def.fog >= 0 { 1 } else { 0 };
-    if alpha_mode == AlphaMode::Add && src == 4 {
-        flags |= 2;
+    // Bit 0: fogged; bit 8: which of the scene's fogs (only indices 0 and 1 are defined).
+    let mut flags = if def.fog >= 0 { 1 | (def.fog.min(1) as u32) << 8 } else { 0 };
+    // Bevy's Add is premultiplied blending: the shader scales by the GX source
+    // factor itself and outputs alpha 0 so the destination is kept, as GX ONE does.
+    if alpha_mode == AlphaMode::Add {
+        flags |= 4 | if src == 4 { 2 } else { 0 };
     }
     tev.chan.w = flags;
     let mut tex: [Option<Handle<Image>>; 8] = Default::default();
@@ -247,7 +301,8 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
         }
     }
     let [t0, t1, t2, t3, t4, t5, t6, t7] = tex;
-    GxMaterial { tev, t0, t1, t2, t3, t4, t5, t6, t7, globals, alpha_mode, srt }
+    let base = [tev.mat_color, Vec4::ONE, tev.amb_color, Vec4::ONE, tev.regs[1], tev.regs[2], tev.regs[3], tev.konst[0], tev.konst[1], tev.konst[2], tev.konst[3]];
+    GxMaterial { tev, t0, t1, t2, t3, t4, t5, t6, t7, globals, alpha_mode, srt, base }
 }
 
 /// Swap each glTF StandardMaterial for its GX equivalent as scenes spawn.
@@ -261,15 +316,16 @@ fn convert(
     mut mats: ResMut<Assets<GxMaterial>>,
 ) {
     for (e, std, extras) in &q {
-        let Some(path) = assets.get_path(&std.0) else { continue };
-        let path = path.path().to_string_lossy().replace('\\', "/");
+        let Some(asset_path) = assets.get_path(&std.0) else { continue };
+        let path = asset_path.path().to_string_lossy().replace('\\', "/");
+        let label = asset_path.label().unwrap_or_default().to_string();
         let Ok(x) = serde_json::from_str::<Extras>(&extras.value) else { continue };
         // The blimp's panel is a 4x4 grey placeholder the original fills or hides at
         // runtime; drawn as-is it z-fights with the Wii logo underneath.
         if x.gx.name == "mt_airship_dummy" {
             commands.entity(e).insert(Visibility::Hidden);
         }
-        let key = (path.clone(), x.gx.name.clone());
+        let key = (path.clone(), x.gx.name.clone(), label);
         let handle = cache.0.entry(key).or_insert_with(|| mats.add(decode(&x.gx, &path, &assets, globals.0.clone()))).clone();
         commands.entity(e).remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(handle));
     }
@@ -301,15 +357,41 @@ fn update_globals(
         env.sun_dir.extend(0.0).to_array(),
         env.sun_color.extend(0.0).to_array(),
         env.ambient.extend(0.0).to_array(),
-        env.fog_color.extend(0.0).to_array(),
-        [env.fog.x, env.fog.y, 0.0, 0.0],
+        env.fogs[0].0.extend(0.0).to_array(),
+        env.fogs[0].1.extend(0.0).to_array(),
         cam.translation().extend(0.0).to_array(),
         Vec3::from(rows[0]).extend(0.0).to_array(),
         Vec3::from(rows[1]).extend(0.0).to_array(),
         Vec3::from(rows[2]).extend(0.0).to_array(),
+        env.fogs[1].0.extend(0.0).to_array(),
+        env.fogs[1].1.extend(0.0).to_array(),
     ];
     if let Some(mut b) = buffers.get_mut(&globals.0) {
         b.clear();
         b.extend(data);
+    }
+}
+
+fn tag_billboards(mut commands: Commands, q: Query<(Entity, &bevy::gltf::GltfExtras), Added<bevy::gltf::GltfExtras>>) {
+    for (e, extras) in &q {
+        if let Some(mode) = serde_json::from_str::<serde_json::Value>(&extras.value).ok().and_then(|v| v["billboard"].as_u64()) {
+            commands.entity(e).insert(Billboard(mode as u32));
+        }
+    }
+}
+
+/// Turns billboard bones to face the camera after animation has posed them.
+/// ponytail: modes 1-4 all face the view (ROT modes' own roll is dropped); 5-6 turn about Y only.
+fn billboards(cam: Single<&GlobalTransform, With<crate::world::MainCamera>>, parents: Query<&GlobalTransform>, mut q: Query<(&Billboard, &ChildOf, &mut Transform)>) {
+    let cam = cam.compute_transform();
+    for (mode, parent, mut t) in &mut q {
+        let Ok(p) = parents.get(parent.parent()) else { continue };
+        let world = if mode.0 >= 5 {
+            let back = cam.rotation * Vec3::Z;
+            Quat::from_rotation_y(back.x.atan2(back.z))
+        } else {
+            cam.rotation
+        };
+        t.rotation = p.compute_transform().rotation.inverse() * world;
     }
 }

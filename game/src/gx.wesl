@@ -221,14 +221,20 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if op == 1u { keep = p0 || p1; } else if op == 2u { keep = p0 != p1; } else if op == 3u { keep = p0 == p1; }
     if !keep { discard; }
 
-    // Linear fog by distance from the camera.
-    if (tev.chan.w & 1u) != 0u && globals[4].y > globals[4].x {
-        let d = distance(in.world_position.xyz, globals[5].xyz);
-        let f = clamp((d - globals[4].x) / (globals[4].y - globals[4].x), 0.0, 1.0);
-        out = vec4<f32>(mix(out.rgb, globals[3].rgb, f), out.a);
+    // Fog selected by the material (GX fog index).
+    // ponytail: every non-zero GX fog type is treated as linear (the island only uses linear).
+    let second = ((tev.chan.w >> 8u) & 1u) == 1u;
+    let fog_color = select(globals[3], globals[9], second);
+    let fog = select(globals[4], globals[10], second);
+    if (tev.chan.w & 1u) != 0u && fog.z > 0.5 && fog.y > fog.x {
+        // GX perspective fog uses eye-space depth, not radial distance.
+        let d = -dot(globals[8].xyz, in.world_position.xyz - globals[5].xyz);
+        let f = clamp((d - fog.x) / (fog.y - fog.x), 0.0, 1.0);
+        out = vec4<f32>(mix(out.rgb, fog_color.rgb, f), out.a);
     }
     // GX colours are gamma-space; the render target is linear.
     out = vec4<f32>(pow(out.rgb, vec3<f32>(2.2)), out.a);
     if (tev.chan.w & 2u) != 0u { out = vec4<f32>(out.rgb * out.a, out.a); }
+    if (tev.chan.w & 4u) != 0u { out.a = 0.0; }
     return out;
 }

@@ -237,6 +237,7 @@ struct Propeller;
 struct Bullet {
     vel: Vec3,
     life: u32,
+    age: u32,
 }
 
 #[derive(Component)]
@@ -265,7 +266,7 @@ pub fn plugin(app: &mut App) {
     let starts = std::array::from_fn(|i| placements.objects.iter().find(|p| p.group == 3 && p.kind == 2 && (p.params[1] >> 16) as usize == i).expect("original water departure missing").transform());
     app.insert_resource(FirstFlight { boarded: false, starts }).add_message::<Shot>()
         .add_systems(Startup, (speedometer_spawn, load_flare_effects))
-        .add_systems(Update, (speedometer, flare_visuals))
+        .add_systems(Update, (speedometer, flare_visuals, tint_bullets))
         .add_systems(PostUpdate, projectile_billboards.before(TransformSystems::Propagate))
         .add_systems(Update, paint)
         .add_systems(Update, board.run_if(crate::menu::playing))
@@ -450,17 +451,17 @@ fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer
     let Ok((mut p, t)) = q.single_mut() else { return };
     p.gun_cooldown = p.gun_cooldown.saturating_sub(1);
     if c.shoot && p.gun_cooldown == 0 {
-        p.gun_cooldown = 6;
-        p.gun_side = !p.gun_side;
-        let side = if p.gun_side { 14.0 } else { -14.0 };
-        let pos = t.transform_point(Vec3::new(side, -2.0, 20.0));
-        let vel = p.vel + t.rotation * Vec3::Z * 22.0;
+        // Original Balloon Popper: a shot every 5 frames, 80 units/frame along the
+        // nose, 80 frames of life. ponytail: muzzle offset is runtime-initialised in
+        // the original; nose centre is an approximation.
+        p.gun_cooldown = 5;
+        let pos = t.transform_point(Vec3::new(0.0, -2.0, 20.0));
+        let vel = t.rotation * Vec3::Z * 80.0;
         commands.spawn((
-            // The original selects WS2_pln_billbord_bullet (scene 0), with its
-            // bullet_image texture; scene 1 is an untextured solid sphere.
+            // WS2_pln_billbord_bullet (scene 0) with its bullet_image texture.
             WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/bullet.glb"))),
-            Transform::from_translation(pos), ProjectileSprite,
-            Bullet { vel, life: 75 },
+            Transform::from_translation(pos).with_scale(Vec3::splat(2.0)), ProjectileSprite,
+            Bullet { vel, life: 80, age: 0 },
         ));
         sounds.write(crate::sound::Sound::effect("SE_PLN_SHOOT_BULLET", None));
     }
@@ -474,6 +475,19 @@ fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer
             PointLight { color: Color::srgba_u8(def.color[0], def.color[1], def.color[2], 255), intensity: 5.0e8, range: 3000.0, ..default() },
             Flare { vel: p.vel * 0.5 + Vec3::Y * 9.0, life: 360 },
         )).with_child((Mesh3d(effects.quad.clone()), MeshMaterial3d(material.clone()), Transform::from_scale(Vec3::new(def.size[0]*2.0, def.size[1]*2.0, 1.0)), FlareCore, ProjectileSprite));
+    }
+}
+
+/// The game recolours the shot billboard's TEV C0/C1 with the player's colours
+/// (player 1: blue glow, light-cyan core); the file's white is only a default.
+fn tint_bullets(cache: Res<crate::gx::GxMaterials>, mut materials: ResMut<Assets<crate::gx::GxMaterial>>, mut done: Local<bool>) {
+    if *done { return; }
+    for ((path, name, _), handle) in &cache.0 {
+        if path == "models/bullet.glb" && name == "WS2_pln_billbord_bullet1" && let Some(mut m) = materials.get_mut(handle) {
+            m.set_color(4, 0, 0x0046_ffff);
+            m.set_color(5, 0, 0xc8ff_ffff);
+            *done = true;
+        }
     }
 }
 
@@ -557,7 +571,10 @@ fn projectiles(
             continue;
         }
         b.life -= 1;
+        b.age += 1;
         t.translation += b.vel;
+        // The original swells each shot by 10% of its base size per frame.
+        t.scale = Vec3::splat(2.0 * (1.0 + 0.1 * b.age as f32));
         shots.write(Shot { pos: t.translation, radius: 30.0 });
     }
     for (e, mut f, mut t) in &mut flares {

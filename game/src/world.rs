@@ -15,6 +15,8 @@ struct LightDef {
 
 #[derive(Deserialize, Clone)]
 struct FogDef {
+    /// GX fog type; 0 is off, 2 perspective linear.
+    kind: u8,
     start: f32,
     end: f32,
     color: [u8; 4],
@@ -116,9 +118,10 @@ fn apply_time(
     gx.sun_dir = (l.aim - l.pos).normalize();
     gx.sun_color = v(l.color);
     gx.ambient = v(env.ambient[0]);
+    for (i, f) in env.fog.iter().take(2).enumerate() {
+        gx.fogs[i] = (v(f.color), Vec3::new(f.start, f.end, f.kind as f32));
+    }
     if let Some(f) = env.fog.iter().find(|f| f.end > f.start) {
-        gx.fog_color = v(f.color);
-        gx.fog = Vec2::new(f.start, f.end) * 3.0;
         clear.0 = rgb(f.color);
     }
     for (s, mut vis) in &mut skies {

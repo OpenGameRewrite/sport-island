@@ -234,3 +234,55 @@ pub fn srt0(d: &[u8], o: usize) -> serde_json::Value {
     }
     json!({ "name": cstr(d, o + be32(d, o + if ver >= 5 { 0x18 } else { 0x14 }) as usize), "loop": looped, "materials": mats })
 }
+
+/// PAT0 texture swaps: material -> slot -> texture name for every frame.
+pub fn pat0(d: &[u8], o: usize) -> serde_json::Value {
+    let frames = be16(d, o + 0x30) as usize;
+    let names = o + be32(d, o + 0x14) as usize;
+    let tex = |i: u16| cstr(d, names + be32(d, names + 4 * i as usize) as usize);
+    let mut mats = serde_json::Map::new();
+    for (mname, e) in group(d, o + be32(d, o + 0x10) as usize) {
+        let flags = be32(d, e + 4);
+        let mut slots = serde_json::Map::new();
+        let mut p = e + 8;
+        for slot in (0..8).filter(|s| (flags >> (4 * s)) & 1 != 0) {
+            // Per slot: bit1 constant (texture index inline), else offset to (frame, texture) keys.
+            let seq: Vec<String> = if (flags >> (4 * slot)) & 2 != 0 {
+                vec![tex(be16(d, p)); frames + 1]
+            } else {
+                let k = e + be32(d, p) as usize;
+                let keys: Vec<(f32, u16)> = (0..be16(d, k) as usize).map(|i| (bef(d, k + 8 + 8 * i), be16(d, k + 12 + 8 * i))).collect();
+                (0..=frames).map(|f| tex(keys.iter().rev().find(|(kf, _)| *kf <= f as f32).or(keys.first()).map_or(0, |k| k.1))).collect()
+            };
+            p += 4;
+            slots.insert(slot.to_string(), json!(seq));
+        }
+        mats.insert(mname, serde_json::Value::Object(slots));
+    }
+    json!({ "name": cstr(d, o + be32(d, o + 0x28) as usize), "loop": be32(d, o + 0x38) != 0, "materials": mats })
+}
+
+/// CLR0 colour animation: material -> target -> {mask, values per frame}. Targets
+/// 0..3 are material/ambient colours, 4..6 TEV C0..C2, 7..10 TEV konst 0..3; the
+/// mask keeps original bits (RGBA8, big-endian packed).
+pub fn clr0(d: &[u8], o: usize) -> serde_json::Value {
+    let frames = be16(d, o + 0x20) as usize;
+    let mut mats = serde_json::Map::new();
+    for (mname, e) in group(d, o + be32(d, o + 0x10) as usize) {
+        let flags = be32(d, e + 4);
+        let mut targets = serde_json::Map::new();
+        let mut p = e + 8;
+        for t in (0..11).filter(|t| (flags >> (2 * t)) & 1 != 0) {
+            let values: Vec<u32> = if (flags >> (2 * t + 1)) & 1 != 0 {
+                vec![be32(d, p + 4); frames + 1]
+            } else {
+                let v = p + 4 + be32(d, p + 4) as usize;
+                (0..=frames).map(|f| be32(d, v + 4 * f)).collect()
+            };
+            targets.insert(t.to_string(), json!({ "mask": be32(d, p), "values": values }));
+            p += 8;
+        }
+        mats.insert(mname, serde_json::Value::Object(targets));
+    }
+    json!({ "name": cstr(d, o + be32(d, o + 0x18) as usize), "loop": be32(d, o + 0x24) != 0, "materials": mats })
+}

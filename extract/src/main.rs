@@ -246,15 +246,19 @@ fn models(disc: &mut Disc, out: &Path, only: Option<&str>) -> Result<()> {
             cache.insert(arc_path, disc.archive(arc_path)?);
         }
         let d = cache[arc_path].get(*brres_path).with_context(|| format!("missing {brres_path}"))?;
-        let (glb, info) = convert(d, name).with_context(|| format!("model {name}"))?;
+        let (glb, info, swaps) = convert(d, name).with_context(|| format!("model {name}"))?;
         fs::write(out.join(format!("models/{name}.glb")), glb)?;
+        for (tex, png) in swaps {
+            fs::write(out.join(format!("textures/{tex}.png")), png)?;
+        }
         write_json(&out.join(format!("models/{name}.json")), &info)?;
         println!("  model {name}");
     }
     Ok(())
 }
 
-fn convert(d: &[u8], name: &str) -> Result<(Vec<u8>, Value)> {
+/// Returns the GLB, its metadata and PNGs for textures only reached through PAT0 swaps.
+fn convert(d: &[u8], name: &str) -> Result<(Vec<u8>, Value, Vec<(String, Vec<u8>)>)> {
     let folders = mdl::brres(d);
     let images = mdl::textures(d, &folders);
     let mut models = vec![];
@@ -263,6 +267,14 @@ fn convert(d: &[u8], name: &str) -> Result<(Vec<u8>, Value)> {
     }
     let anims: Vec<_> = folders.get("AnmChr(NW4R)").into_iter().flatten().map(|(n, o)| anim::chr(d, *o, n)).collect();
     let srts: Vec<_> = folders.get("AnmTexSrt(NW4R)").into_iter().flatten().map(|(_, o)| anim::srt0(d, *o)).collect();
+    let pats: Vec<_> = folders.get("AnmTexPat(NW4R)").into_iter().flatten().map(|(_, o)| anim::pat0(d, *o)).collect();
+    let clrs: Vec<_> = folders.get("AnmClr(NW4R)").into_iter().flatten().map(|(_, o)| anim::clr0(d, *o)).collect();
+    let mut swaps: Vec<String> = pats.iter().flat_map(|p| p["materials"].as_object().into_iter().flat_map(|m| m.values()))
+        .flat_map(|slots| slots.as_object().into_iter().flat_map(|s| s.values())).flat_map(|seq| seq.as_array().cloned().unwrap_or_default())
+        .filter_map(|v| v.as_str().map(str::to_owned)).collect();
+    swaps.sort();
+    swaps.dedup();
+    let swaps = swaps.into_iter().filter_map(|t| Some((t.clone(), images.get(&t)?.png().ok()?))).collect();
     let conv = mdl::to_glb(&models, &images, &anims);
     // Route animations target dummy bones absent from the render model. Keep their
     // geometry separately instead of silently discarding moving-boat/whale paths.
@@ -278,5 +290,5 @@ fn convert(d: &[u8], name: &str) -> Result<(Vec<u8>, Value)> {
             json!({ "clip": clip, "points": points })
         }).collect()
     } else { vec![] };
-    Ok((conv.glb, json!({ "materials": conv.info, "srt": srts, "routes": routes, "motion": motion })))
+    Ok((conv.glb, json!({ "materials": conv.info, "srt": srts, "pat": pats, "clr": clrs, "routes": routes, "motion": motion }), swaps))
 }
