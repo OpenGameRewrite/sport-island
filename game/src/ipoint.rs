@@ -124,7 +124,7 @@ fn paint_icons(mut commands: Commands, save: Res<Save>, tod: Res<TimeOfDay>, ass
     }
 }
 
-fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>, existing: Query<(), With<MessageBox>>) {
+fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>, existing: Query<(), With<MessageBox>>, font: Res<crate::lang::UiFont>) {
     if !existing.is_empty() {
         return;
     }
@@ -136,7 +136,7 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>,
         }
         commands.spawn((WorldAssetRoot(scene.clone()), Transform::from_translation(p.pos), Marker(i), MarkerFade::default())).observe(attach_visuals);
     }
-    let font = TextFont::from(FontSource::sans_serif());
+    let font = TextFont::from(font.0.clone());
     commands.spawn((Node { position_type: PositionType::Absolute, left: percent(4), bottom: px(8), ..default() }, Text::new(""), font.clone().with_font_size(FontSize::Px(18.0)), TextColor(Color::WHITE), BoardHint, DespawnOnExit(AppState::Play)));
     commands.spawn((
         bevy::ui_widgets::Button, crate::menu::RecordButton,
@@ -254,8 +254,8 @@ fn show_message(
     **boxv = if visible { Visibility::Inherited } else { Visibility::Hidden };
     if let (true, Some(i)) = (visible, shown.index) {
         let def = &points.0[i];
-        title.0 = format!("ⓘ  {}", texts.msg(name_id(def), c.pad));
-        body.0 = texts.msg(name_id(def) + 1 + tod.0 as u32, c.pad);
+        title.set_if_neq(Text::new(format!("ⓘ  {}", texts.msg(name_id(def), c.pad))));
+        body.set_if_neq(Text::new(texts.msg(name_id(def) + 1 + tod.0 as u32, c.pad)));
         image.image = assets.load(format!("ui/WS2_pln_picture_{i:02}.png"));
     }
 }
@@ -274,12 +274,12 @@ fn spark(shown: Res<Shown>, time: Res<Time>, camera: Single<(&Camera, &GlobalTra
 }
 
 fn counter(save: Res<Save>, tod: Res<TimeOfDay>, mut text: Single<&mut Text, With<Counter>>) {
-    text.0 = format!("ⓘ {} / 80", save.collected.iter().filter(|r| **r % 3 == tod.0 as u16).count());
+    text.set_if_neq(Text::new(format!("ⓘ {} / 80", save.collected.iter().filter(|r| **r % 3 == tod.0 as u16).count())));
 }
 
 fn hint(save: Res<Save>, texts: Res<Texts>, controls: Res<Controls>, mode: Res<State<crate::Mode>>, menu: Res<crate::menu::Menu>, mut hint: Single<&mut Text, With<BoardHint>>) {
-    hint.0 = if menu.open || *mode.get() == crate::Mode::Fly { String::new() } else {
+    hint.set_if_neq(Text::new(if menu.open || *mode.get() == crate::Mode::Fly { String::new() } else {
         let board = crate::input::binding(&save, 9);
         format!("{}: {} · Esc / Start: {}", crate::input::label(&board[controls.pad as usize]), texts.ui(crate::lang::Ui::BoardHint), texts.ui(crate::lang::Ui::Controls))
-    };
+    }));
 }

@@ -14,6 +14,11 @@ pub struct Language {
 #[derive(Resource)]
 pub struct Languages(pub Vec<Language>);
 
+/// Hold system font data as assets: the text shaper otherwise evicts file-backed
+/// fonts between layouts and gives their glyph atlases a new identity on reload.
+#[derive(Resource)]
+pub struct UiFont(pub FontSource);
+
 #[derive(Resource, Default)]
 pub struct Texts {
     pub code: String,
@@ -173,6 +178,23 @@ const ACTIONS: &[[&str; 5]] = &[
 ];
 
 pub fn plugin(app: &mut App) {
+    let font = app.world_mut().resource_scope(|world, mut cx: Mut<bevy::text::FontCx>| {
+        let mut names: Vec<String> = [FontSource::sans_serif(), FontSource::Generic(bevy::text::GenericFontFamily::Emoji)]
+            .iter().filter_map(|s| cx.get_family(s).map(str::to_owned)).collect();
+        // Windows separates some arrows and enclosed information symbols.
+        names.push("Segoe UI Symbol".into());
+        let mut sources = Vec::new();
+        for name in names {
+            if let Some(family) = cx.collection.family_by_name(&name)
+                && let Some(data) = family.default_font().and_then(|f| f.load(Some(&mut cx.source_cache))) {
+                let handle = world.resource_mut::<Assets<Font>>().add(Font {data, alias:String::new()});
+                sources.push(FontSource::Handle(handle));
+            }
+        }
+        sources.push(FontSource::sans_serif());
+        FontSource::List(sources)
+    });
+    app.insert_resource(UiFont(font));
     let langs: Vec<Language> = crate::read_json("text/languages.json");
     let code = app.world().resource::<Save>().lang.clone().unwrap_or_else(|| langs[0].code.clone());
     app.insert_resource(Texts::load(&code)).insert_resource(Languages(langs));

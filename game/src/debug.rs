@@ -5,6 +5,8 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 pub fn plugin(app: &mut App) {
+    if std::env::var("SI_MEMORY").is_ok() { app.add_systems(Update, memory); }
+    if std::env::var("SI_TEXT_STRESS").is_ok() { app.add_systems(PostUpdate, text_stress.before(bevy::ui::UiSystems::Layout)); }
     if std::env::var("SI_CONTROLS").is_ok() || std::env::var("SI_MENU").is_ok() {
         app.add_systems(Update, crate::menu::preview_controls);
     }
@@ -30,6 +32,20 @@ pub fn plugin(app: &mut App) {
     if std::env::var("SI_CAM").is_ok() {
         app.add_systems(PostStartup, place_camera);
     }
+}
+
+fn memory(time: Res<Time<Real>>, mut last: Local<f32>, images: Res<Assets<Image>>, fonts: Res<bevy::text::FontAtlasSet>, meshes: Res<Assets<Mesh>>, materials: Res<Assets<StandardMaterial>>) {
+    if time.elapsed_secs()-*last<5.0 { return; }
+    *last=time.elapsed_secs();
+    info!("SI_MEMORY t={:.0} images={} font_keys={} font_bytes={} meshes={} materials={}", *last, images.len(), fonts.len(), fonts.total_bytes(&images), meshes.len(), materials.len());
+    if std::env::var("SI_TEXT_STRESS").is_ok() { assert!(fonts.total_bytes(&images)<=64*1024*1024, "font atlas grew beyond 64 MiB under repeated text updates"); }
+}
+
+/// Native regression: SI_TEXT_STRESS=1 SI_MEMORY=1 SI_SHOT=... SI_WAIT=120.
+/// Continually reshape Latin, symbols and emoji without allocating new fonts.
+fn text_stress(mut frame: Local<u32>, mut texts: Query<&mut Text>) {
+    *frame+=1;
+    for mut text in &mut texts { text.0=format!("Font stress {}: é ö ü ñ ⓘ ◀ ▶ ○ ●", *frame); }
 }
 
 /// Exercises the playable loop through normal controls; requires an isolated SI_SAVE.

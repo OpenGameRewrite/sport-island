@@ -466,14 +466,14 @@ fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer
     }
 }
 
-fn speedometer_spawn(mut commands: Commands) {
-    commands.spawn((Node { position_type: PositionType::Absolute, bottom: px(24), right: px(24), padding: UiRect::all(px(10)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.1, 0.25, 0.7)), Text::new(""), TextFont::from(FontSource::sans_serif()).with_font_size(FontSize::Px(19.0)), TextColor(Color::WHITE), Speedometer));
+fn speedometer_spawn(mut commands: Commands, font: Res<crate::lang::UiFont>) {
+    commands.spawn((Node { position_type: PositionType::Absolute, bottom: px(24), right: px(24), padding: UiRect::all(px(10)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.1, 0.25, 0.7)), Text::new(""), TextFont::from(font.0.clone()).with_font_size(FontSize::Px(19.0)), TextColor(Color::WHITE), Speedometer));
 }
 fn speedometer(save: Res<Save>, texts: Res<crate::lang::Texts>, planes: Query<&Plane>, mut text: Single<(&mut Text, &mut Visibility), With<Speedometer>>) {
     let Ok(p) = planes.single() else { *text.1 = Visibility::Hidden; return; };
     *text.1 = if save.speedometer {Visibility::Inherited} else {Visibility::Hidden};
     use crate::lang::Ui;
-    text.0.0 = format!("{}: {:.0} {}\n{}: {:.0}%\n{}: {:.0}%", texts.ui(Ui::Speed), p.vel.length()*60.0, texts.ui(Ui::Units), texts.ui(Ui::Engine), p.throttle*100.0, texts.ui(if p.boost_sign >= 0.0 {Ui::Boost} else {Ui::Slow}), p.boost_force*100.0);
+    text.0.set_if_neq(Text::new(format!("{}: {:.0} {}\n{}: {:.0}%\n{}: {:.0}%", texts.ui(Ui::Speed), p.vel.length()*60.0, texts.ui(Ui::Units), texts.ui(Ui::Engine), p.throttle*100.0, texts.ui(if p.boost_sign >= 0.0 {Ui::Boost} else {Ui::Slow}), p.boost_force*100.0)));
 }
 fn flare_visuals(mut commands: Commands, time: Res<Time>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut flares: Query<(&Flare, &Transform, &mut PointLight)>, mut smoke: Query<(Entity, &mut FlareTrail, &mut Transform), Without<Flare>>, mut next: Local<f32>) {
     *next -= time.delta_secs();

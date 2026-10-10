@@ -47,8 +47,8 @@ fn cursor(menu: Res<Menu>, state: Res<State<AppState>>, mut cursor: Single<&mut 
     let active = !menu.open && *state.get() == AppState::Play;
     cursor.visible = !active; cursor.grab_mode = if active { CursorGrabMode::Confined } else { CursorGrabMode::None };
 }
-fn spawn_ui(mut commands: Commands) {
-    let font = TextFont::from(FontSource::sans_serif());
+fn spawn_ui(mut commands: Commands, font: Res<crate::lang::UiFont>) {
+    let font = TextFont::from(font.0.clone());
     commands.spawn((Node { position_type: PositionType::Absolute, left: percent(20), right: percent(20), top: percent(5), padding: UiRect::all(px(20)), flex_direction: FlexDirection::Column, row_gap: px(3), border_radius: BorderRadius::all(px(18)), ..default() }, BackgroundColor(Color::srgba(0.02, 0.12, 0.3, 0.9)), GlobalZIndex(10), MenuRoot)).with_children(|p| {
         p.spawn((Text::new(""), font.clone().with_font_size(FontSize::Px(32.0)), TextColor(Color::WHITE), MenuHeader));
         for i in 0..LINES {
@@ -183,19 +183,19 @@ fn render(m: Res<Menu>, state: Res<State<AppState>>, texts: Res<Texts>, langs: R
     let mut selected = Some(m.sel);
     let rows: Vec<String> = match m.page {
         Page::Controls => {
-            header.0.0 = texts.ui(Ui::Controls).into(); help.0 = texts.ui(Ui::ControlsHint).into();
+            header.0.set_if_neq(Text::new(texts.ui(Ui::Controls))); help.set_if_neq(Text::new(texts.ui(Ui::ControlsHint)));
             let mut rows: Vec<_> = (0..crate::input::ACTIONS.len()).map(|i| {
                 let pair = crate::input::binding(&save, i);
                 format!("{}:  {}", texts.action(i), if m.capturing && m.sel == i {texts.ui(Ui::Waiting).into()} else {format!("{} / {}", texts.binding(&pair[0]), texts.binding(&pair[1]))})
             }).collect(); rows.push(texts.ui(Ui::ResetControls).into()); rows
         }
         Page::Settings => {
-            header.0.0 = texts.ui(Ui::Settings).into(); help.0 = texts.ui(Ui::MenuHint).into();
+            header.0.set_if_neq(Text::new(texts.ui(Ui::Settings))); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
             vec![format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::FlightSensitivity), save.flight_sensitivity*100.0), format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::LookSensitivity), save.look_sensitivity*100.0), format!("{}: ◀ {} ▶", texts.ui(Ui::InvertPitch), onoff(save.invert_pitch)), format!("{}: ◀ {} ▶", texts.ui(Ui::Speedometer), onoff(save.speedometer))]
         }
         Page::Record => {
-            header.0.0 = format!("{} — {} / {}   ({}–{} / 80)", texts.ui(Ui::IPoints), save.collected.len(), READINGS, m.scroll+1, m.scroll+LINES);
-            help.0 = texts.ui(Ui::RecordHint).into(); selected = None;
+            header.0.set_if_neq(Text::new(format!("{} — {} / {}   ({}–{} / 80)", texts.ui(Ui::IPoints), save.collected.len(), READINGS, m.scroll+1, m.scroll+LINES)));
+            help.set_if_neq(Text::new(texts.ui(Ui::RecordHint))); selected = None;
             (m.scroll..m.scroll+LINES).map(|i| {
                 let mark = |t| if save.collected.contains(&((i*3) as u16+t)) {"●"} else {"○"};
                 let name = if (0..3).any(|t| save.collected.contains(&((i*3) as u16+t))) {texts.msg(name_id(&points.0[i]), c.pad)} else {"?".into()};
@@ -204,7 +204,7 @@ fn render(m: Res<Menu>, state: Res<State<AppState>>, texts: Res<Texts>, langs: R
         }
         Page::Main => {
             let title = *state.get() == AppState::Title;
-            header.0.0 = "Sport Island".into(); help.0 = texts.ui(Ui::MenuHint).into();
+            header.0.set_if_neq(Text::new("Sport Island")); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
             let lang = langs.0.iter().find(|l| l.code == texts.code).map_or("", |l| l.name.as_str());
             let livery = if save.plane == 0 { [Ui::Red, Ui::White, Ui::Yellow][save.livery.min(2) as usize] } else { [Ui::Orange, Ui::Blue][save.livery.min(1) as usize] };
             (if title {TITLE} else {PAUSE}).iter().map(|row| match row {
@@ -218,14 +218,16 @@ fn render(m: Res<Menu>, state: Res<State<AppState>>, texts: Res<Texts>, langs: R
             }).collect()
         }
     };
-    header.1.font_size = FontSize::Px((window.height()*0.038).clamp(20.0, 32.0));
+    let size = FontSize::Px((window.height()*0.038).clamp(20.0, 32.0));
+    if header.1.font_size != size { header.1.font_size = size; }
     for (l, mut t, mut col, mut font) in &mut lines {
-        t.0 = rows.get(l.0).cloned().unwrap_or_default();
-        col.0 = if selected == Some(l.0) {Color::srgb(1.0, 0.85, 0.2)} else {Color::WHITE};
-        font.font_size = FontSize::Px((window.height()*0.026).clamp(14.0, 22.0));
+        t.set_if_neq(Text::new(rows.get(l.0).cloned().unwrap_or_default()));
+        col.set_if_neq(TextColor(if selected == Some(l.0) {Color::srgb(1.0, 0.85, 0.2)} else {Color::WHITE}));
+        let size = FontSize::Px((window.height()*0.026).clamp(14.0, 22.0));
+        if font.font_size != size { font.font_size = size; }
     }
     for (item, mut node) in &mut items { node.display = if item.0 < rows.len() {Display::Flex} else {Display::None}; }
-    for (footer, children) in &footers { if footer.0 == 0 { for e in children { if let Ok(mut t) = footer_texts.get_mut(*e) { t.0 = texts.ui(Ui::Back).into(); } } } }
+    for (footer, children) in &footers { if footer.0 == 0 { for e in children { if let Ok(mut t) = footer_texts.get_mut(*e) { t.set_if_neq(Text::new(texts.ui(Ui::Back))); } } } }
 }
 #[cfg(test)]
 mod tests {
