@@ -133,6 +133,18 @@ pub struct GxEnv {
 #[derive(Resource, Default)]
 pub struct GxMaterials(pub HashMap<(String, String), Handle<GxMaterial>>);
 
+#[derive(Deserialize)]
+struct TextureAnimation {
+    name: String,
+    #[serde(rename = "loop")]
+    looping: bool,
+    materials: HashMap<String, HashMap<usize, Vec<[f32; 5]>>>,
+}
+#[derive(Deserialize)]
+struct ModelAnimations { srt: Vec<TextureAnimation> }
+#[derive(Resource, Default)]
+struct TextureAnimations(HashMap<String, Vec<TextureAnimation>>);
+
 pub fn plugin(app: &mut App) {
     embedded_asset!(app, "gx.wesl");
     let globals = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![[0f32; 4]; 9]));
@@ -140,7 +152,33 @@ pub fn plugin(app: &mut App) {
         .insert_resource(GxGlobals(globals))
         .init_resource::<GxEnv>()
         .init_resource::<GxMaterials>()
-        .add_systems(Update, (convert, fix_image_formats, update_globals));
+        .init_resource::<TextureAnimations>()
+        .add_systems(Update, (convert, animate_textures, fix_image_formats, update_globals).chain());
+}
+
+fn animate_textures(time: Res<Time>, cache: Res<GxMaterials>, mut animations: ResMut<TextureAnimations>, mut materials: ResMut<Assets<GxMaterial>>) {
+    for ((path, name), handle) in &cache.0 {
+        let tracks = animations.0.entry(path.clone()).or_insert_with(|| {
+            let metadata = crate::asset_dir().join(path).with_extension("json");
+            std::fs::read(metadata).ok().and_then(|b| serde_json::from_slice::<ModelAnimations>(&b).ok()).map_or_else(Vec::new, |v| v.srt)
+        });
+        let Some(mut material) = materials.get_mut(handle) else { continue };
+        for track in tracks {
+            // The three sea variants share material names. Use the original base-water track.
+            if matches!(track.name.as_str(), "WS2_common_sea_P" | "WS2_common_sea_S") { continue; }
+            let Some(slots) = track.materials.get(name) else { continue };
+            for (&slot, frames) in slots {
+                if slot >= 8 || frames.is_empty() { continue; }
+                let frame = time.elapsed_secs() * 60.0;
+                let span = (frames.len() - 1).max(1) as f32;
+                let frame = if track.looping { frame % span } else { frame.min(span) };
+                let a = (frame.floor() as usize).min(frames.len() - 1);
+                let b = (a + 1).min(frames.len() - 1);
+                let srt = std::array::from_fn(|i| frames[a][i] + (frames[b][i] - frames[a][i]) * frame.fract());
+                material.set_srt(slot, srt);
+            }
+        }
+    }
 }
 
 fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderBuffer>) -> GxMaterial {
@@ -179,7 +217,12 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
     // Blending: PE CMODE0 (enable, dst factor bits 5-7, src factor bits 8-10).
     let cm = bp(0x41);
     let (blend, dst, src) = (cm & 1 != 0, (cm >> 5) & 7, (cm >> 8) & 7);
-    let alpha_mode = if blend && dst == 1 {
+    // An enabled blend unit does not make an opaque, depth-writing GX draw
+    // translucent. Putting these meshes in Bevy's transparent pass lets the
+    // island's large water meshes draw over the plane and other solid objects.
+    let alpha_mode = if !def.xlu && bp(0x40) & 16 != 0 {
+        if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 { AlphaMode::Mask(0.0) } else { AlphaMode::Opaque }
+    } else if blend && dst == 1 {
         AlphaMode::Add
     } else if blend && src == 0 && dst == 2 {
         AlphaMode::Multiply

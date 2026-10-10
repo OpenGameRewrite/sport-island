@@ -4,6 +4,7 @@
 mod anim;
 mod bmg;
 mod disc;
+mod effects;
 mod gltf;
 mod kcl;
 mod mdl;
@@ -40,6 +41,8 @@ const MODELS: &[(&str, &str, &str)] = &[
     ("Stage/Static/StageArc.carc", "Sun/G3D/WS2_common_sun_model.brres", "sun"),
     ("Stage/Static/StageArc.carc", "Tent/G3D/WS2_common_tent.brres", "tent"),
     ("Stage/Static/StageArc.carc", "Torch/G3D/WS2_common_torch.brres", "torch"),
+    ("Stage/Static/StageArc.carc", "Pole/G3D/WS2_common_pole.brres", "pole"),
+    ("Stage/Static/StageArc.carc", "GlfTee/G3D/WS2_common_tee.brres", "tee"),
     ("Stage/Static/StageArc.carc", "Tree/G3D/WS2_common_tree.brres", "tree"),
     ("Stage/Static/StageArc.carc", "Tree/G3D/WS2_common_tree2.brres", "tree2"),
     ("Stage/Static/StageArc.carc", "Tree/G3D/WS2_common_tree3.brres", "tree3"),
@@ -56,6 +59,7 @@ const MODELS: &[(&str, &str, &str)] = &[
     ("Stage/PlnScene/PlnSub.carc", "G3D/WS2_pln_signalgun.brres", "signalgun"),
     ("Stage/PlnScene/PlnSub.carc", "G3D/WS2_pln_parachute.brres", "parachute"),
     ("Stage/PlnScene/Pln1P.carc", "G3D/WS2_pln_info_core.brres", "ipoint"),
+    ("Stage/PlnScene/Pln1P.carc", "G3D/WS2_pln_info_ef.brres", "ipoint_fx"),
     ("Stage/PlnScene/Pln1P.carc", "G3D/WS2_pln_guidplane.brres", "guideplane"),
     ("Stage/PlnScene/Pln1P.carc", "G3D/WS2_pln_small_balloon.brres", "small_balloon"),
     ("Stage/PlnScene/Pln1P.carc", "G3D/WS2_pln_giant_balloon.brres", "giant_balloon"),
@@ -71,17 +75,23 @@ fn main() -> Result<()> {
         None => ask_path().context("usage: sport-island-extract <Wii Sports Resort disc image> [output dir]")?,
     };
     let out = PathBuf::from(args.next().unwrap_or_else(|| "assets".into()));
-    // Optional third argument limits work while developing: text, data, audio, model[:name].
+    // Optional third argument limits work while developing: text, data, audio, ui, effects, model[:name].
     let only = args.next();
+    if let Some(part) = only.as_deref() {
+        if !["text", "data", "audio", "ui", "effects", "model"].contains(&part) && !part.strip_prefix("model:").is_some_and(|name| MODELS.iter().any(|m| m.2 == name)) {
+            bail!("unknown extraction selection: {part}");
+        }
+    }
     let want = |what: &str| only.as_deref().is_none_or(|o| o.starts_with(what));
     let mut disc = Disc::open(&image)?;
     if !disc.game_id.starts_with("RZT") {
         bail!("{} is {}, expected Wii Sports Resort (RZTxxx)", image.display(), disc.game_id);
     }
     println!("Extracting {} from {}", disc.game_id, image.display());
-    for d in ["models", "text", "data", "audio"] {
+    for d in ["models", "text", "data", "audio", "ui", "textures", "effects"] {
         fs::create_dir_all(out.join(d))?;
     }
+    if only.is_none() && out.join("VERSION").exists() { fs::remove_file(out.join("VERSION"))?; }
     if want("text") {
         text(&mut disc, &out)?;
     }
@@ -91,10 +101,33 @@ fn main() -> Result<()> {
     if want("model") {
         models(&mut disc, &out, only.as_deref().and_then(|o| o.strip_prefix("model:")))?;
     }
+    if want("ui") || only.is_none() {
+        if disc.game_id != "RZTP01" { bail!("plane palette extraction currently supports European RZTP01 only"); }
+        let bytes = disc.dol_data(0x8065bfb8, 12 * 4)?;
+        let colors: Vec<_> = bytes.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
+        write_json(&out.join("data/plane_colors.json"), &json!(colors))?;
+        let sub = disc.archive("Stage/PlnScene/PlnSub.carc")?;
+        for path in ["G3D/WS2_pln_picture.brres", "G3D/WS2_pln_plane.brres", "G3D/WS2_pln_plane02.brres"] {
+            let d = sub.get(path).with_context(|| path.to_string())?;
+            for (name, image) in mdl::textures(d, &mdl::brres(d)) {
+                let folder = if name.starts_with("WS2_pln_picture") { "ui" } else { "textures" };
+                fs::write(out.join(format!("{folder}/{name}.png")), image.png()?)?;
+            }
+        }
+        // The information core's alternate textures are selected at runtime;
+        // exporting only the model's default loses the collected check marks.
+        let points = disc.archive("Stage/PlnScene/Pln1P.carc")?;
+        let core = points.get("G3D/WS2_pln_info_core.brres").context("information core missing")?;
+        for (name, image) in mdl::textures(core, &mdl::brres(core)) {
+            fs::write(out.join(format!("textures/{name}.png")), image.png()?)?;
+        }
+    }
     if want("audio") {
         sound::extract(&mut disc, &out.join("audio"))?;
     }
-    fs::write(out.join("VERSION"), format!("{}\n", env!("CARGO_PKG_VERSION")))?;
+    if want("effects") { effects::extract(&mut disc, &out)?; }
+    // Partial developer extraction must not mark an incomplete directory playable.
+    if only.is_none() { fs::write(out.join("VERSION"), format!("{}\n", env!("CARGO_PKG_VERSION")))?; }
     println!("Done. Assets written to {}", out.display());
     Ok(())
 }
@@ -140,6 +173,11 @@ fn data(disc: &mut Disc, out: &Path) -> Result<()> {
     }
     for i in 0..3 {
         let arc = disc.archive(&format!("Stage/PlnScene/PlnEnv{i}.carc"))?;
+        for name in ["island_tag", "guide_path"] {
+            let source = format!("WS2_pln_{name}{i}.pmp");
+            let bytes = arc.get(&source).with_context(|| source.clone())?;
+            write_json(&out.join(format!("data/{name}{i}.json")), &pmp::to_json(bytes))?;
+        }
         let find = |ext: &str| arc.iter().find(|(k, _)| k.ends_with(ext)).map(|(_, v)| v.as_slice());
         write_json(&out.join(format!("data/env{i}.json")), &env_json(find(".plight"), find(".pfog")))?;
     }
@@ -207,18 +245,11 @@ fn models(disc: &mut Disc, out: &Path, only: Option<&str>) -> Result<()> {
         if !cache.contains_key(arc_path) {
             cache.insert(arc_path, disc.archive(arc_path)?);
         }
-        let Some(d) = cache[arc_path].get(*brres_path) else {
-            eprintln!("  missing {brres_path}");
-            continue;
-        };
-        match convert(d, name) {
-            Ok((glb, info)) => {
-                fs::write(out.join(format!("models/{name}.glb")), glb)?;
-                write_json(&out.join(format!("models/{name}.json")), &info)?;
-                println!("  model {name}");
-            }
-            Err(e) => eprintln!("  model {name}: {e:#}"),
-        }
+        let d = cache[arc_path].get(*brres_path).with_context(|| format!("missing {brres_path}"))?;
+        let (glb, info) = convert(d, name).with_context(|| format!("model {name}"))?;
+        fs::write(out.join(format!("models/{name}.glb")), glb)?;
+        write_json(&out.join(format!("models/{name}.json")), &info)?;
+        println!("  model {name}");
     }
     Ok(())
 }
@@ -233,5 +264,19 @@ fn convert(d: &[u8], name: &str) -> Result<(Vec<u8>, Value)> {
     let anims: Vec<_> = folders.get("AnmChr(NW4R)").into_iter().flatten().map(|(n, o)| anim::chr(d, *o, n)).collect();
     let srts: Vec<_> = folders.get("AnmTexSrt(NW4R)").into_iter().flatten().map(|(_, o)| anim::srt0(d, *o)).collect();
     let conv = mdl::to_glb(&models, &images, &anims);
-    Ok((conv.glb, json!({ "materials": conv.info, "srt": srts })))
+    // Route animations target dummy bones absent from the render model. Keep their
+    // geometry separately instead of silently discarding moving-boat/whale paths.
+    let routes: Vec<_> = anims.iter().filter(|a| a.bones.len() == 1 && !models.iter().any(|m| m.bones.iter().any(|b| b.name == a.bones[0].bone))).map(|a| {
+        let bone = &a.bones[0];
+        let samples: Vec<[f32; 3]> = (0..=a.frames * 20).map(|i| std::array::from_fn(|k| bone.t[k].as_ref().map_or(0.0, |t| t.at(i as f32 / 20.0)))).collect();
+        json!({ "name": a.name, "points": samples, "flags": if a.looped { 1 } else { 0 } })
+    }).collect();
+    let motion: Vec<_> = if name == "car" {
+        anims.iter().enumerate().map(|(clip, a)| {
+            let bone = &a.bones[0];
+            let points: Vec<[f32; 3]> = (0..=a.frames).map(|f| std::array::from_fn(|k| bone.t[k].as_ref().map_or(0.0, |t| t.at(f as f32)))).collect();
+            json!({ "clip": clip, "points": points })
+        }).collect()
+    } else { vec![] };
+    Ok((conv.glb, json!({ "materials": conv.info, "srt": srts, "routes": routes, "motion": motion })))
 }

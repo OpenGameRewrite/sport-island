@@ -43,7 +43,7 @@ pub fn plugin(app: &mut App) {
 /// Start next to the Wishing Fountain in town.
 pub const START: Vec3 = Vec3::new(-1880.0, 400.0, 2180.0);
 
-fn spawn(mut commands: Commands, assets: Res<AssetServer>, col: Res<Collision>, existing: Query<(), With<Player>>) {
+fn spawn(mut commands: Commands, assets: Res<AssetServer>, col: Res<Collision>, existing: Query<(), With<Player>>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     if !existing.is_empty() {
         return;
     }
@@ -52,11 +52,7 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, col: Res<Collision>, 
     commands
         .spawn((Player { vel: Vec3::ZERO, grounded: true, safe: p, parachute: false }, Transform::from_translation(p), Visibility::default()))
         .with_children(|c| {
-            c.spawn((
-                WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/walker.glb"))),
-                Transform::from_scale(Vec3::splat(3.5)),
-            ))
-            .observe(no_culling);
+            body(c, &mut meshes, &mut materials, false);
             c.spawn((
                 WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/parachute.glb"))),
                 Transform::from_xyz(0.0, HEIGHT, 0.0),
@@ -154,4 +150,27 @@ fn camera(
     let k = (12.0 * time.delta_secs()).min(1.0);
     cam.translation = cam.translation.lerp(want, k);
     cam.look_at(target, Vec3::Y);
+}
+
+/// The same original character, seated in a cockpit or standing on foot.
+pub fn body(c: &mut ChildSpawnerCommands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, seated: bool) {
+    // A small original character, rather than a Mii body missing its
+    // separately generated head. Dimensions match the collision capsule.
+    let shirt = materials.add(StandardMaterial { base_color: Color::srgb(0.05, 0.45, 0.85), unlit: true, ..default() });
+    let skin = materials.add(StandardMaterial { base_color: Color::srgb(0.92, 0.68, 0.47), unlit: true, ..default() });
+    let dark = materials.add(StandardMaterial { base_color: Color::srgb(0.09, 0.12, 0.18), unlit: true, ..default() });
+    c.spawn((Mesh3d(meshes.add(Capsule3d::new(7.0, 13.0))), MeshMaterial3d(shirt.clone()), Transform::from_xyz(0.0, 24.0, 0.0)));
+    c.spawn((Mesh3d(meshes.add(Sphere::new(8.0))), MeshMaterial3d(skin.clone()), Transform::from_xyz(0.0, 43.0, 0.0)));
+    c.spawn((Mesh3d(meshes.add(Sphere::new(8.1))), MeshMaterial3d(dark.clone()), Transform::from_xyz(0.0, 48.0, -0.8).with_scale(Vec3::new(1.0, 0.45, 1.0))));
+    c.spawn((Mesh3d(meshes.add(Sphere::new(1.0))), MeshMaterial3d(skin.clone()), Transform::from_xyz(0.0, 42.5, 8.0)));
+    c.spawn((Mesh3d(meshes.add(Capsule3d::new(0.45, 2.0))), MeshMaterial3d(dark.clone()), Transform::from_xyz(0.0, 39.7, 7.2).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))));
+    for x in [-4.0, 4.0] {
+        c.spawn((Mesh3d(meshes.add(Capsule3d::new(3.2, 9.0))), MeshMaterial3d(dark.clone()), if seated { Transform::from_xyz(x, 15.0, 5.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)) } else { Transform::from_xyz(x, 8.0, 0.0) }));
+        if seated { c.spawn((Mesh3d(meshes.add(Capsule3d::new(2.8, 4.0))), MeshMaterial3d(dark.clone()), Transform::from_xyz(x, 9.0, 10.0))); }
+        c.spawn((Mesh3d(meshes.add(Sphere::new(3.4))), MeshMaterial3d(dark.clone()), Transform::from_xyz(x, if seated {4.0} else {3.0}, if seated {12.0} else {1.0}).with_scale(Vec3::new(1.0, 0.7, 1.5))));
+        c.spawn((Mesh3d(meshes.add(Sphere::new(1.0))), MeshMaterial3d(dark.clone()), Transform::from_xyz(x * 0.65, 44.0, 7.2)));
+    }
+    for x in [-10.0, 10.0] {
+        c.spawn((Mesh3d(meshes.add(Capsule3d::new(2.6, 10.0))), MeshMaterial3d(skin.clone()), if seated { Transform::from_xyz(x, 25.0, 5.0).with_rotation(Quat::from_rotation_x(-0.8)) } else { Transform::from_xyz(x, 25.0, 0.0).with_rotation(Quat::from_rotation_z(-x.signum() * 0.15)) }));
+    }
 }
