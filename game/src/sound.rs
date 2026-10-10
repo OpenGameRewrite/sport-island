@@ -16,8 +16,18 @@ impl Sound {
     pub fn effect(name: &'static str, pos: Option<Vec3>) -> Self { Self { name, pos, range: 1500.0 } }
 }
 
+/// Known sounds and whether each loops. Pilotwings Resort ones are `pwr/<name>`.
 #[derive(Resource)]
 pub struct Sounds(HashMap<String, bool>);
+
+impl Sounds {
+    pub fn has(&self, name: &str) -> bool { self.0.contains_key(name) }
+}
+
+/// Asset path of a sound.
+pub fn path(name: &str) -> String {
+    match name.strip_prefix("pwr/") { Some(n) => format!("pwr/audio/{n}.wav"), None => format!("audio/{name}.wav") }
+}
 
 #[derive(Component)]
 pub struct Emitter {
@@ -31,8 +41,9 @@ struct Engine;
 #[derive(Component)] struct MenuMusic(bool);
 
 pub fn plugin(app: &mut App) {
-    let path = crate::asset_dir().join("audio/index.json");
-    let index = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let read = |rel: &str| -> HashMap<String, bool> { std::fs::read(crate::asset_dir().join(rel)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default() };
+    let mut index = read("audio/index.json");
+    index.extend(read("pwr/audio/index.json").into_iter().map(|(k, v)| (format!("pwr/{k}"), v)));
     app.insert_resource(Sounds(index))
         .add_message::<Sound>()
         .add_systems(OnEnter(crate::AppState::Title), menu_music_start)
@@ -64,7 +75,7 @@ pub fn source(commands: &mut Commands, assets: &AssetServer, sounds: &Sounds, en
     // One-shot ambience repeats with silence between calls rather than chirping continuously.
     let settings = if loops { PlaybackSettings::LOOP } else { PlaybackSettings::DESPAWN };
     commands.entity(entity).with_child((
-        AudioPlayer::new(assets.load(format!("audio/{name}.wav"))),
+        AudioPlayer::new(assets.load(path(name))),
         settings.with_spatial(true).with_spatial_scale(SpatialScale::new(0.001)).with_volume(Volume::SILENT),
         Transform::default(),
         Visibility::default(),
@@ -76,7 +87,7 @@ fn effects(mut commands: Commands, assets: Res<AssetServer>, sounds: Res<Sounds>
     for sound in events.read() {
         if !sounds.0.contains_key(sound.name) { continue; }
         let mut e = commands.spawn((
-            AudioPlayer::new(assets.load(format!("audio/{}.wav", sound.name))),
+            AudioPlayer::new(assets.load(path(sound.name))),
             PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.65)).with_spatial(sound.pos.is_some()).with_spatial_scale(SpatialScale::new(0.001)),
             Transform::from_translation(sound.pos.unwrap_or_default()),
         ));
@@ -85,7 +96,7 @@ fn effects(mut commands: Commands, assets: Res<AssetServer>, sounds: Res<Sounds>
 }
 
 fn engine(
-    mut commands: Commands, assets: Res<AssetServer>, sounds: Res<Sounds>,
+    mut commands: Commands, assets: Res<AssetServer>, sounds: Res<Sounds>, save: Res<crate::save::Save>,
     plane: Query<&Plane>, engines: Query<Entity, With<Engine>>,
     mut sinks: Query<&mut AudioSink, With<Engine>>, menu: Res<Menu>,
 ) {
@@ -93,8 +104,14 @@ fn engine(
         for e in &engines { commands.entity(e).despawn(); }
         return;
     };
-    if engines.is_empty() && sounds.0.contains_key("SE_PLN_ENGINE") {
-        commands.spawn((AudioPlayer::new(assets.load("audio/SE_PLN_ENGINE.wav")), PlaybackSettings::LOOP.with_volume(Volume::Linear(0.25)), Engine));
+    // The add-on plane and jet keep their own engines.
+    let name = match crate::vehicles::selected(&save) {
+        Some(crate::vehicles::Kind::Plane) => "pwr/plane_engine",
+        Some(crate::vehicles::Kind::Jet) => "pwr/jet_engine",
+        _ => "SE_PLN_ENGINE",
+    };
+    if engines.is_empty() && sounds.has(name) {
+        commands.spawn((AudioPlayer::new(assets.load(path(name))), PlaybackSettings::LOOP.with_volume(Volume::Linear(0.25)), Engine));
     }
     for mut sink in &mut sinks {
         if menu.open { sink.pause(); } else { sink.play(); }

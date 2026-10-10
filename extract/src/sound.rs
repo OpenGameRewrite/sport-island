@@ -165,7 +165,7 @@ fn rwav(d: &[u8]) -> Result<Wave> {
 }
 
 /// GameCube/Wii DSP ADPCM: 8-byte frames of a header byte and 14 nibbles.
-struct Adpcm {
+pub(crate) struct Adpcm {
     coef: [i32; 16],
     h1: i32,
     h2: i32,
@@ -173,8 +173,9 @@ struct Adpcm {
 
 impl Adpcm {
     fn new(info: &[u8]) -> Self { Adpcm { coef: std::array::from_fn(|i| be16(info, i * 2) as i16 as i32), h1: 0, h2: 0 } }
+    pub(crate) fn with_coefs(coef: [i32; 16]) -> Self { Adpcm { coef, h1: 0, h2: 0 } }
 
-    fn decode(&mut self, src: &[u8], len: usize) -> Vec<f32> {
+    pub(crate) fn decode(&mut self, src: &[u8], len: usize) -> Vec<f32> {
         let mut out = Vec::with_capacity(len);
         for frame in src.chunks(8) {
             let (scale, idx) = (1i32 << (frame[0] & 15), (frame[0] >> 4) as usize & 7);
@@ -720,7 +721,7 @@ fn brstm(d: &[u8]) -> Result<Pcm> {
     Ok((pcm, used as u16, rate, looped))
 }
 
-fn wav(pcm: &[f32], channels: u16, rate: u32) -> Vec<u8> {
+pub(crate) fn wav(pcm: &[f32], channels: u16, rate: u32) -> Vec<u8> {
     let bytes = pcm.len() as u32 * 2;
     let mut w = Vec::with_capacity(44 + bytes as usize);
     for part in [&b"RIFF"[..], &(36 + bytes).to_le_bytes(), b"WAVEfmt ", &16u32.to_le_bytes(), &1u16.to_le_bytes(), &channels.to_le_bytes()] {

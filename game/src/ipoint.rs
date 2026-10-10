@@ -266,7 +266,7 @@ fn show_message(
     tod: Res<TimeOfDay>,
     points: Res<IPoints>,
     assets: Res<AssetServer>,
-    mut image: Single<&mut ImageNode, With<MessageImage>>,
+    mut image: Single<(&mut ImageNode, &mut Node), With<MessageImage>>,
     mut boxv: Single<&mut Visibility, (With<MessageBox>, Without<Spark>)>,
     mut title: Single<&mut Text, (With<MessageTitle>, Without<MessageBody>)>,
     mut body: Single<&mut Text, (With<MessageBody>, Without<MessageTitle>)>,
@@ -278,7 +278,9 @@ fn show_message(
         title.set_if_neq(Text::new(format!("ⓘ  {}", def.name(&texts, c.pad))));
         body.set_if_neq(Text::new(def.reading(&texts, c.pad, tod.0)));
         // Only the Wii points have photos.
-        image.image = if def.msg != 0 { assets.load(format!("ui/WS2_pln_picture_{i:02}.png")) } else { Handle::default() };
+        let photo = def.msg != 0;
+        image.0.image = if photo { assets.load(format!("ui/WS2_pln_picture_{i:02}.png")) } else { Handle::default() };
+        image.1.display = if photo { Display::Flex } else { Display::None };
     }
 }
 

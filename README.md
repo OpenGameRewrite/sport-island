@@ -71,9 +71,12 @@ The game works the same without it. With it, the aircraft choice adds the
 | Pedal Glider | Hang glider plus pedals | Tap RT / Shift (or A / Space) to pedal; pedalling too fast drains the hearts |
 | Rocket Belt, Super Rocket Belt | The 3DS jets; the pilot stays upright and turns on the spot | RT / Shift: full jets, A / Space: light throttle, LT / Ctrl: air brake; the stick leans the jets |
 
-The island also gains the 3DS landing pads, landing strips, the Boost Gate
-(fly through it for a burst of speed), the landing-pad blimp and the i-points
-Pilotwings Resort added. Shared i-points keep the Wii wording; build with
+Each vehicle uses its 3DS sounds and moving parts: control surfaces, the pedal
+glider's crank and propellers, swivelling rocket nozzles and their flames, and a
+pilot who leans and pedals. The island also gains the 3DS floating landing pads,
+tugboat decks and the cruising landing-pad blimp (all solid: land or walk on
+them, and the blimp carries you along), the Boost Gate (fly through it for a
+burst of speed) and the i-points Pilotwings Resort added. Shared i-points keep the Wii wording; build with
 `--features pwr-text` to read the 3DS wording instead.
 
 ## Work in progress

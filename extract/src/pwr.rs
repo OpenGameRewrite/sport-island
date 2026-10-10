@@ -387,7 +387,7 @@ fn etc1(v: u64) -> [[u8; 3]; 16] {
 }
 
 /// One "0rtc" mesh: model-space vertices, triangle list.
-struct Mesh { material: String, pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, color: Vec<[f32; 4]>, idx: Vec<u32> }
+struct Mesh { group: u32, material: String, pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, color: Vec<[f32; 4]>, idx: Vec<u32> }
 
 /// MODL v26: mesh table, materials (texture or `.mat` name), joints ("TJRM").
 fn model(b: &[u8]) -> Result<(Vec<Mesh>, Vec<(String, [f32; 12])>)> {
@@ -403,7 +403,8 @@ fn model(b: &[u8]) -> Result<(Vec<Mesh>, Vec<(String, [f32; 12])>)> {
         ensure!(w(29) >> 16 == 0x1403, "mesh {e}: unsupported index type");
         let idx: Vec<u32> = (0..n_idx).map(|i| u16le(b, ib + i * 2) as u32).collect();
         let nv = idx.iter().max().map_or(0, |m| m + 1) as usize;
-        let mut mesh = Mesh { material, pos: vec![], nrm: vec![], uv: vec![], color: vec![], idx };
+        // The low half of the first word picks the skeleton bone (`group`).
+        let mut mesh = Mesh { group: u32le(b, r) & 0xFFFF, material, pos: vec![], nrm: vec![], uv: vec![], color: vec![], idx };
         for a in 0..w(8).count_ones() as usize {
             let (desc, stride, ao) = (w(9 + a * 3), w(10 + a * 3) as usize, w(11 + a * 3) as usize);
             let (ty, comps, slot) = (desc >> 16, (desc >> 8 & 0xFF) as usize, desc & 0xFF);
@@ -532,11 +533,60 @@ impl Pwr {
     }
 }
 
-fn to_glb(pwr: &Pwr, containers: &[&str], meshes: &[Mesh], joints: &[(String, [f32; 12])], name: &str) -> Vec<u8> {
+/// A movable part from `<model>_skel.val`: its pivot joint, the mesh group it
+/// carries (none for plain attachment joints) and its parent part.
+struct Bone { name: String, group: Option<u32>, parent: String }
+
+fn skeleton(tree: &Value) -> Vec<Bone> {
+    let read = |key: &str| tree[key].as_array().into_iter().flatten().filter_map(|b| Some(Bone {
+        name: b["name"].as_str()?.to_ascii_lowercase(),
+        group: b["group"].as_u64().map(|g| g as u32),
+        parent: b["parent"].as_str().unwrap_or("").to_ascii_lowercase(),
+    })).collect::<Vec<_>>();
+    read("bone").into_iter().chain(read("joint")).collect()
+}
+
+/// Node layout: the model root, one node per skeleton bone (pivoting at its
+/// joint, carrying its mesh group) and the remaining joints as attachment
+/// points under the part they move with. Returns (parent, name, absolute pivot).
+fn layout(joints: &[(String, [f32; 12])], skel: &[Bone]) -> Vec<(usize, String, [f32; 3])> {
+    let pivot = |n: &str| joints.iter().find(|(j, _)| j.eq_ignore_ascii_case(n)).map(|(_, m)| [m[9], m[10], -m[11]]);
+    let mut nodes: Vec<(usize, String, [f32; 3])> = vec![(0, String::new(), [0.0; 3])];
+    let index = |nodes: &[(usize, String, [f32; 3])], n: &str| nodes.iter().position(|x| !n.is_empty() && x.1.eq_ignore_ascii_case(n));
+    // Parents may be listed after their children.
+    let mut pending: Vec<&Bone> = skel.iter().filter(|b| pivot(&b.name).is_some()).collect();
+    while !pending.is_empty() {
+        let before = pending.len();
+        pending.retain(|b| {
+            let parent = if b.parent.is_empty() || pivot(&b.parent).is_none() { Some(0) } else { index(&nodes, &b.parent) };
+            let Some(parent) = parent else { return true };
+            nodes.push((parent, b.name.clone(), pivot(&b.name).unwrap()));
+            false
+        });
+        if pending.len() == before { break; }
+    }
+    for (jname, m) in joints {
+        if index(&nodes, jname).is_some() { continue; }
+        let at = [m[9], m[10], -m[11]];
+        // Footpads sit on their pedals; `harness` hangs from `harness_pivot`.
+        let parent = nodes.iter().enumerate().skip(1).find(|(_, (_, n, p))| {
+            let d = (0..3).map(|k| (p[k] - at[k]).powi(2)).sum::<f32>().sqrt();
+            d < 0.05 || n.starts_with(&jname.to_ascii_lowercase())
+        }).map_or(0, |(i, _)| i);
+        nodes.push((parent, jname.clone(), at));
+    }
+    nodes
+}
+
+fn to_glb(pwr: &Pwr, containers: &[&str], meshes: &[Mesh], joints: &[(String, [f32; 12])], skel: &[Bone], name: &str) -> Vec<u8> {
+    let nodes = layout(joints, skel);
+    // Mesh groups go to their bone's node; everything else stays on the root.
+    let owner = |group: u32| skel.iter().find(|b| b.group == Some(group))
+        .and_then(|b| nodes.iter().position(|n| n.1 == b.name)).unwrap_or(0);
     let mut g = Gltf::default();
     g.samplers.push(json!({ "magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497 }));
     let mut materials: HashMap<String, usize> = HashMap::new();
-    let mut prims = vec![];
+    let mut prims: Vec<Vec<Value>> = vec![vec![]; nodes.len()];
     for m in meshes.iter().filter(|m| !m.pos.is_empty() && !m.idx.is_empty()) {
         let mat = match materials.get(&m.material) {
             Some(&i) => i,
@@ -567,6 +617,8 @@ fn to_glb(pwr: &Pwr, containers: &[&str], meshes: &[Mesh], joints: &[(String, [f
                         }
                     }
                 }
+                // Exhaust flames glow: the 3DS draws its `*_fx` models additively.
+                if name.ends_with("_fx") && mj["extras"]["blend"].is_null() { mj["alphaMode"] = json!("BLEND"); mj["extras"]["blend"] = json!("add"); }
                 g.materials.push(mj);
                 materials.insert(m.material.clone(), g.materials.len() - 1);
                 g.materials.len() - 1
@@ -577,9 +629,14 @@ fn to_glb(pwr: &Pwr, containers: &[&str], meshes: &[Mesh], joints: &[(String, [f
         let back = |v: &[[f32; 3]]| v.iter().map(|n| n.map(|c| -c)).collect::<Vec<_>>();
         let twice = |v: &[[f32; 3]]| [v, v].concat();
         let n = m.pos.len() as u32;
-        let pos = twice(&m.pos);
+        let node = owner(m.group);
+        let o = nodes[node].2;
+        let pos = twice(&m.pos.iter().map(|p| [p[0] - o[0], p[1] - o[1], p[2] - o[2]]).collect::<Vec<_>>());
         let nrm = [m.nrm.clone(), back(&m.nrm)].concat();
-        let uv = [m.uv.clone(), m.uv.clone()].concat();
+        // The rocket flame's material flips its texture with a texture matrix
+        // (not read here); its UVs only frame the flame tongue once flipped back.
+        let uv: Vec<[f32; 2]> = if m.material == "jetfx1.tex" { m.uv.iter().map(|t| [t[0], 1.0 - t[1]]).collect() } else { m.uv.clone() };
+        let uv = [uv.clone(), uv].concat();
         let color = [m.color.clone(), m.color.clone()].concat();
         let idx: Vec<u32> = m.idx.iter().copied().chain(m.idx.chunks(3).flat_map(|t| [t[0] + n, t[2] + n, t[1] + n])).collect();
         let mut attrs = Map::new();
@@ -588,19 +645,50 @@ fn to_glb(pwr: &Pwr, containers: &[&str], meshes: &[Mesh], joints: &[(String, [f
         if uv.len() == pos.len() { attrs.insert("TEXCOORD_0".into(), json!(g.floats(&uv.concat(), "VEC2", 2, false, Some(34962)))); }
         if color.len() == pos.len() { attrs.insert("COLOR_0".into(), json!(g.floats(&color.concat(), "VEC4", 4, false, Some(34962)))); }
         let indices = g.u32s(&idx);
-        prims.push(json!({ "attributes": attrs, "indices": indices, "material": mat }));
+        prims[node].push(json!({ "attributes": attrs, "indices": indices, "material": mat }));
     }
-    g.meshes.push(json!({ "name": name, "primitives": prims }));
-    g.nodes.push(json!({ "name": name, "mesh": 0 }));
-    let mut roots = vec![0];
-    // Joints become named empty nodes so the game can find attachment points.
-    for (jname, m) in joints {
-        let t = [m[9], m[10], -m[11]];
-        g.nodes.push(json!({ "name": jname, "translation": t }));
-        roots.push(g.nodes.len() - 1);
+    // Named nodes let the game find attachment points and move the parts.
+    for (i, (parent, jname, at)) in nodes.iter().enumerate() {
+        let mut node = json!({ "name": if i == 0 { name } else { jname.as_str() } });
+        if i > 0 {
+            let p = nodes[*parent].2;
+            node["translation"] = json!([at[0] - p[0], at[1] - p[1], at[2] - p[2]]);
+        }
+        if !prims[i].is_empty() {
+            g.meshes.push(json!({ "name": node["name"], "primitives": prims[i] }));
+            node["mesh"] = json!(g.meshes.len() - 1);
+        }
+        let children: Vec<usize> = (1..nodes.len()).filter(|&c| nodes[c].0 == i).collect();
+        if !children.is_empty() { node["children"] = json!(children); }
+        g.nodes.push(node);
     }
-    g.scenes.push((name.to_string(), roots));
+    g.scenes.push((name.to_string(), vec![0]));
     g.glb()
+}
+
+/// Triangles in the island collision format (count, then per triangle three
+/// corners and a surface-flags word), in glTF model space.
+fn collision(meshes: &[Mesh]) -> Vec<u8> {
+    let tris: Vec<[[f32; 3]; 3]> = meshes.iter().flat_map(|m| m.idx.chunks_exact(3).map(|t| [0, 1, 2].map(|k| m.pos[t[k] as usize]))).collect();
+    let mut out = (tris.len() as u32).to_le_bytes().to_vec();
+    for t in tris {
+        out.extend(t.iter().flatten().flat_map(|f| f.to_le_bytes()));
+        out.extend(0u32.to_le_bytes());
+    }
+    out
+}
+
+/// "SFX0" sound: mono DSP-ADPCM with a little-endian DSPADPCM-style header.
+/// Looping sounds keep only their loop body, as the game loops whole files.
+fn sfx(d: &[u8]) -> Option<(Vec<f32>, u32, bool)> {
+    if d.len() < 0x80 { return None }
+    let (rate, samples, loops) = (u32le(d, 0x10), u32le(d, 0x20) as usize, u32le(d, 0x2C) != 0);
+    let coef = std::array::from_fn(|i| u16le(d, 0x3C + i * 2) as i16 as i32);
+    let pcm = crate::sound::Adpcm::with_coefs(coef).decode(d.get(0x80..)?, samples);
+    // Nibble addresses count two header nibbles per 8-byte frame.
+    let sample = |nib: u32| (nib / 16 * 14 + (nib % 16).saturating_sub(2)) as usize;
+    let (from, to) = if loops { (sample(u32le(d, 0x30)), (sample(u32le(d, 0x34)) + 1).min(pcm.len())) } else { (0, pcm.len()) };
+    Some((pcm.get(from..to)?.to_vec(), rate, loops))
 }
 
 /// Vehicle containers: (shared model container, per-vehicle data container).
@@ -646,7 +734,7 @@ pub fn extract(path: &Path, out: &Path) -> Result<()> {
     let mut liveries = Map::new();
     for v in VEHICLES {
         let data = format!("{v}_");
-        let containers = [*v, data.as_str(), "common", "freeflight_"];
+        let containers = [*v, data.as_str(), "common", "freeflight_", "race"];
         // Liveries are painted per favourite colour; models embed the first.
         pwr.livery = None;
         if let Some(body) = pwr.res(&data, "body_colors.val").and_then(|(_, d)| valt(d, &pwr.names).ok()) {
@@ -666,7 +754,8 @@ pub fn extract(path: &Path, out: &Path) -> Result<()> {
         for r in list.iter().filter(|r| r.kind == "MODL") {
             let (meshes, joints) = model(&pwr.payloads[*v][r.off..r.off + r.size]).with_context(|| format!("{v}/{}", r.name))?;
             let stem = r.name.trim_end_matches(".mod");
-            fs::write(out.join(format!("models/{v}_{stem}.glb")), to_glb(&pwr, &containers, &meshes, &joints, stem))?;
+            let skel = pwr.res(&data, &format!("{stem}_skel.val")).and_then(|(_, d)| valt(d, &pwr.names).ok()).map(|t| skeleton(&t)).unwrap_or_default();
+            fs::write(out.join(format!("models/{v}_{stem}.glb")), to_glb(&pwr, &containers, &meshes, &joints, &skel, stem))?;
         }
         println!("  vehicle {v}");
     }
@@ -679,10 +768,26 @@ pub fn extract(path: &Path, out: &Path) -> Result<()> {
         for r in list.iter().filter(|r| r.kind == "MODL" && r.name.ends_with(".mod")) {
             let Ok((meshes, joints)) = model(&pwr.payloads[c][r.off..r.off + r.size]) else { println!("  skipped {c}/{}", r.name); continue };
             let stem = r.name.trim_end_matches(".mod");
-            fs::write(out.join(format!("models/{c}_{stem}.glb")), to_glb(&pwr, &containers, &meshes, &joints, stem))?;
+            fs::write(out.join(format!("models/{c}_{stem}.glb")), to_glb(&pwr, &containers, &meshes, &joints, &[], stem))?;
+            // Landing pads, tugboat decks and the blimp are solid.
+            if ["gldrairlnd", "tugboat01", "blmplndpd"].contains(&stem) { fs::write(out.join(format!("models/{c}_{stem}.col")), collision(&meshes))?; }
         }
         println!("  objects {c}");
     }
+    // Sound effects: vehicles, course objects and free-flight pickups.
+    let mut index = Map::new();
+    fs::create_dir_all(out.join("audio"))?;
+    for c in VEHICLES.iter().copied().chain(["race", "freeflight", "overlays"]) {
+        let Some(list) = pwr.tocs.get(c) else { continue };
+        for r in list.iter().filter(|r| r.kind == "SFX0") {
+            let Some((pcm, rate, loops)) = sfx(&pwr.payloads[c][r.off..r.off + r.size]) else { continue };
+            let name = format!("{c}_{}", r.name.trim_end_matches(".sfx").to_ascii_lowercase());
+            fs::write(out.join(format!("audio/{name}.wav")), crate::sound::wav(&pcm, 1, rate))?;
+            index.insert(name, json!(loops));
+        }
+    }
+    fs::write(out.join("audio/index.json"), serde_json::to_vec(&Value::Object(index))?)?;
+    println!("  sounds");
     let names: Vec<_> = favs.iter().map(|f| json!({ "name": f.name, "primary": format!("#{:08x}", f.primary) })).collect();
     fs::write(out.join("data/liveries.json"), serde_json::to_vec(&json!({ "favorites": names, "vehicles": liveries }))?)?;
     fs::write(out.join("VERSION"), format!("{}\n", env!("CARGO_PKG_VERSION")))?;
@@ -713,6 +818,31 @@ mod tests {
     fn quicklz_literal_stream_round_trips() {
         // Uncompressed short-header stream: flags 0, size 5.
         assert_eq!(quicklz3(&[0x04, 8, 5, b'h', b'e', b'l', b'l', b'o']).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn parts_pivot_on_their_joints_and_attachments_follow() {
+        let j = |n: &str, x: f32, y: f32, z: f32| (n.to_string(), [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, x, y, z]);
+        let joints = [j("right_pedal", 0.0, 0.5, 0.0), j("crank", 0.0, 0.0, 0.0), j("Right_footpad", 0.0, 0.51, 0.0), j("light", 3.0, 0.0, 0.0)];
+        let skel = [Bone { name: "right_pedal".into(), group: Some(8), parent: "crank".into() }, Bone { name: "crank".into(), group: Some(6), parent: String::new() }];
+        let nodes = layout(&joints, &skel);
+        let find = |n: &str| nodes.iter().position(|x| x.1 == n).unwrap();
+        assert_eq!(nodes[find("right_pedal")].0, find("crank"));
+        assert_eq!(nodes[find("Right_footpad")].0, find("right_pedal"));
+        assert_eq!(nodes[find("light")].0, 0);
+    }
+
+    #[test]
+    fn sfx_loop_keeps_the_loop_body() {
+        // 2 frames (28 samples) of silence, looping from sample 14 to the end.
+        let mut d = vec![0u8; 0x80 + 16];
+        d[0x10..0x14].copy_from_slice(&22050u32.to_le_bytes());
+        d[0x20..0x24].copy_from_slice(&28u32.to_le_bytes());
+        d[0x2C] = 1;
+        d[0x30..0x34].copy_from_slice(&18u32.to_le_bytes());
+        d[0x34..0x38].copy_from_slice(&31u32.to_le_bytes());
+        let (pcm, rate, loops) = sfx(&d).unwrap();
+        assert_eq!((pcm.len(), rate, loops), (14, 22050, true));
     }
 
     #[test]

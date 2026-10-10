@@ -4,7 +4,9 @@
 //! Pilotwings Resort models Wuhu Island in metres, mirrored on Z against the
 //! Wii game: a Wii position is `(x, y, -z) * 10` of the 3DS one.
 
+use crate::collide::{Collision, Platform};
 use crate::ipoint::{IPointDef, IPoints, Marker, MarkerFade};
+use bevy::math::Affine3A;
 use crate::AppState;
 use bevy::gltf::GltfMaterialExtras;
 use bevy::prelude::*;
@@ -63,7 +65,9 @@ pub fn plugin(app: &mut App) {
     if !available() { return; }
     app.init_resource::<Scrolling>()
         .add_systems(OnEnter(AppState::Play), spawn)
-        .add_systems(Update, (convert_materials, follow_path, spin, scroll))
+        .add_systems(Update, (convert_materials, spin, scroll))
+        // Platforms move before anyone stands on them this frame.
+        .add_systems(PreUpdate, (follow_path, move_platforms).chain())
         .add_systems(FixedPostUpdate, boost_gates);
 }
 
@@ -78,6 +82,7 @@ fn boost_gates(
     gates: Query<&BoostGate>,
     mut last: Local<Option<Vec3>>,
     mut flying: Query<(&Transform, Option<&mut crate::plane::Plane>, Option<&mut crate::vehicles::Vehicle>), With<crate::plane::Flying>>,
+    mut sounds: MessageWriter<crate::sound::Sound>,
 ) {
     let Ok((t, plane, vehicle)) = flying.single_mut() else { *last = None; return };
     let now = t.translation;
@@ -89,6 +94,7 @@ fn boost_gates(
         cross.distance(g.center) < g.radius
     });
     if !through { return; }
+    sounds.write(crate::sound::Sound::effect("pwr/race_turbo_deploy", None));
     if let Some(mut p) = plane {
         // Wii units per frame along the nose.
         let nose = t.rotation * Vec3::Z;
@@ -118,12 +124,35 @@ struct PathFollower { points: Vec<Vec3>, distance: f32, speed: f32 }
 #[derive(Component)]
 struct Spin(f32);
 
+/// A moving collision platform (index into `Collision::platforms`).
+#[derive(Component)]
+struct Carrier(usize);
+
+fn stem(name: &str) -> String { name.trim_end_matches(".mod").to_ascii_lowercase() }
+
 fn model(assets: &AssetServer, name: &str) -> WorldAssetRoot {
-    WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("pwr/models/race_{}.glb", name.trim_end_matches(".mod").to_ascii_lowercase()))))
+    WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("pwr/models/race_{}.glb", stem(name)))))
 }
 
-fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>, existing: Query<(), With<PwrObject>>) {
+/// A model's collision triangles (model space), when it is solid. The 3DS
+/// strips wind both ways, so floors are turned to face up.
+fn solid(name: &str) -> Vec<[Vec3; 3]> {
+    let bytes = std::fs::read(crate::asset_dir().join(format!("pwr/models/race_{}.col", stem(name)))).unwrap_or_default();
+    crate::collide::read_tris(&bytes).into_iter().map(|([a, b, c], _)| if (b - a).cross(c - a).y < 0.0 { [a, c, b] } else { [a, b, c] }).collect()
+}
+
+fn move_platforms(time: Res<Time>, mut col: ResMut<Collision>, q: Query<(&Carrier, &Transform)>) {
+    for (c, t) in &q {
+        let to_world = t.compute_affine() * Affine3A::from_scale(Vec3::splat(SCALE));
+        if let Some(p) = col.platforms.get_mut(c.0) { p.set(to_world, time.delta_secs()); }
+    }
+}
+
+fn spawn(mut commands: Commands, assets: Res<AssetServer>, sounds: Res<crate::sound::Sounds>, points: Res<IPoints>, mut col: ResMut<Collision>, mut solid_once: Local<bool>, existing: Query<(), With<PwrObject>>) {
     if !existing.is_empty() { return; }
+    // Static pads join the island collision once; platforms are rebuilt.
+    let add_static = !std::mem::replace(&mut *solid_once, true);
+    col.platforms.clear();
     let dynos: HashMap<String, String> = data("race_/obstacle.val.json")["dyno"].as_array().into_iter().flatten()
         .filter_map(|d| Some((d["name"].as_str()?.to_string(), d["model"].as_str()?.to_string()))).collect();
     // The free-flight course layout is the same in all three free-flight modes.
@@ -134,8 +163,12 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>,
         if f.len() < 12 { continue; }
         let t = frame(&f);
         if kind == "blimp_landing_pad" {
-            spawn_blimp(&mut commands, &assets, &points, t, name);
+            spawn_blimp(&mut commands, &assets, &sounds, &points, &mut col, t, name);
             continue;
+        }
+        if add_static {
+            info!("pwr: {kind} is solid ({} triangles)", solid(name).len());
+            for [a, b, c] in solid(name) { col.add(t.transform_point(a), t.transform_point(b), t.transform_point(c), 0); }
         }
         let mut e = commands.spawn((model(&assets, name), t, Visibility::default(), PwrObject, DespawnOnExit(AppState::Play)));
         // The ring spans the model's XY plane; its opening is about 6 m across the middle.
@@ -144,16 +177,24 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>,
 }
 
 /// The landing-pad blimp loops its route carrying i-point 100.
-fn spawn_blimp(commands: &mut Commands, assets: &AssetServer, points: &IPoints, start: Transform, model_name: &str) {
+fn spawn_blimp(commands: &mut Commands, assets: &AssetServer, sounds: &crate::sound::Sounds, points: &IPoints, col: &mut Collision, start: Transform, model_name: &str) {
     let mut path: Vec<(i64, Vec3)> = objects(&data("wuhu_free_plane/paths.val.json")).iter()
         .filter(|o| o["name"].as_str() == Some("blimp_landing_pad"))
         .filter_map(|o| { let f = floats(&o["unfloat_frame64"]); (f.len() >= 12).then(|| (o["idx"].as_i64().unwrap_or(0), world([f[9], f[10], f[11]]))) })
         .collect();
     path.sort_by_key(|p| p.0);
     let speed = 7.5 * SCALE;
-    let root = commands.spawn((Transform::from_translation(start.translation).with_rotation(start.rotation), Visibility::default(), PwrObject, DespawnOnExit(AppState::Play))).id();
+    let pose = Transform::from_translation(start.translation).with_rotation(start.rotation);
+    col.platforms.push(Platform::new(solid(model_name), pose.compute_affine() * Affine3A::from_scale(Vec3::splat(SCALE))));
+    let root = commands.spawn((pose, Visibility::default(), PwrObject, Carrier(col.platforms.len() - 1), DespawnOnExit(AppState::Play))).id();
+    // Its engines hum within about 300 m.
+    crate::sound::source(commands, assets, sounds, root, "pwr/race_blimp", 3000.0);
     if path.len() >= 2 {
-        commands.entity(root).insert(PathFollower { points: path.into_iter().map(|p| p.1).collect(), distance: 0.0, speed });
+        // Start the loop at the route point nearest the placed blimp.
+        let points: Vec<Vec3> = path.into_iter().map(|p| p.1).collect();
+        let nearest = (0..points.len()).min_by(|&a, &b| points[a].distance(start.translation).total_cmp(&points[b].distance(start.translation))).unwrap_or(0);
+        let distance = (0..nearest).map(|i| points[i].distance(points[i + 1])).sum();
+        commands.entity(root).insert(PathFollower { points, distance, speed });
     }
     commands.entity(root).with_children(|c| {
         c.spawn((model(assets, model_name), Transform::from_scale(Vec3::splat(SCALE)), Visibility::default())).observe(attach_props);

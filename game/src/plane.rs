@@ -76,6 +76,7 @@ pub struct Plane {
     /// that sustained boost drains and rest refills.
     pub jet: bool,
     pub turbo: f32,
+    pub burning: bool,
 }
 
 #[derive(Resource)]
@@ -85,7 +86,7 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0, jet: false, turbo: 1.0 }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0, jet: false, turbo: 1.0, burning: false }
     }
     /// One original-rate physics tick, independent of rendering and collision.
     #[cfg(test)]
@@ -128,6 +129,7 @@ impl Plane {
         if self.jet {
             // Held boost burns the turbo meter (about 3 s full), rest refills it (about 6 s).
             let burning = c.boost > 0.15 && self.turbo > 0.0;
+            self.burning = burning;
             self.turbo = if burning { (self.turbo - 1.0 / 180.0).max(0.0) } else { (self.turbo + 1.0 / 360.0).min(1.0) };
             let slow = if self.boost_sign < 0.0 { self.boost_force * SLOW } else { 0.0 };
             force += z * (JET_THRUST * self.throttle + if burning { TURBO } else { 0.0 } + slow);
@@ -365,7 +367,7 @@ pub fn board(
                     Some(kind) => {
                         let model = format!("pwr/models/{}_lod1.glb", kind.container());
                         let fit = Transform::from_xyz(0.0, -6.0, -8.5).with_rotation(Quat::from_rotation_y(std::f32::consts::PI)).with_scale(Vec3::splat(crate::pwr::SCALE));
-                        p.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(model))), fit, PlaneModel)).observe(attach_addon_propeller);
+                        p.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(model))), fit, PlaneModel, crate::motion::Parts::new(kind))).observe(attach_addon_propeller).observe(crate::motion::collect);
                     }
                     None => {
                         p.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(model_path(save.plane)))), PlaneModel)).observe(attach_propeller).observe(mark_paint).observe(attach_animation);

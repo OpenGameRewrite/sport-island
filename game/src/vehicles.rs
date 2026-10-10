@@ -166,7 +166,7 @@ impl Glider {
 #[derive(Clone, Debug)]
 pub struct Pedal {
     /// Crank speed, radians per second.
-    crank: f32,
+    pub crank: f32,
     pub stamina: f32,
     pub exhausted: bool,
     since_tap: f32,
@@ -270,6 +270,14 @@ pub struct Vehicle {
     pedal: Pedal,
     rocket: Rocket,
     tapped: bool,
+    /// Controls and state for animation and sound.
+    pub drive: crate::motion::Drive,
+}
+
+impl Vehicle {
+    /// Pedal glider hearts left (of five).
+    pub fn hearts(&self) -> u32 { if self.kind == Kind::PGlider { (self.pedal.stamina * 5.0).ceil() as u32 } else { 0 } }
+    pub fn exhausted(&self) -> bool { self.kind == Kind::PGlider && self.pedal.exhausted }
 }
 
 pub fn plugin(app: &mut App) {
@@ -315,8 +323,9 @@ fn board(
             body.vel = body.rot * Vec3::Z * speed;
             let t = body.transform();
             let rocket = Rocket { power: if kind == Kind::SuperRocket { 1.3 } else { 1.0 } };
-            commands.spawn((Vehicle { kind, body, glider: Glider::default(), pedal: Pedal::default(), rocket, tapped: false }, Flying, t, Visibility::default())).with_children(|v| {
-                v.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("pwr/models/{}_lod1.glb", kind.container())))), Rider(kind))).observe(attach_pilot);
+            commands.spawn((Vehicle { kind, body, glider: Glider::default(), pedal: Pedal::default(), rocket, tapped: false, drive: default() }, Flying, t, Visibility::default())).with_children(|v| {
+                v.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("pwr/models/{}_lod1.glb", kind.container())))), Rider(kind), crate::motion::Parts::new(kind)))
+                    .observe(attach_pilot).observe(crate::motion::collect);
             });
             *player.2 = Visibility::Hidden;
             next.set(Mode::Fly);
@@ -348,6 +357,7 @@ fn fly(
     mut next: ResMut<NextState<Mode>>,
     mut q: Query<(&mut Vehicle, &mut Transform)>,
     mut player: Single<(&mut Player, &mut Transform, &mut Visibility), Without<Vehicle>>,
+    mut sounds: MessageWriter<crate::sound::Sound>,
 ) {
     let Ok((mut v, mut t)) = q.single_mut() else { return };
     let stick = c.stick * save.flight_sensitivity;
@@ -359,10 +369,23 @@ fn fly(
     let pedalling = c.boost > 0.5 || c.shoot;
     let tap = pedalling && !v.tapped;
     v.tapped = pedalling;
+    let lift = thermals.lift(v.body.pos);
+    // Eased controls drive the moving parts.
+    let ease = |from: f32, to: f32| from + (to - from) * 0.12;
+    let thrust = if c.boost > 0.5 { 1.0 } else if c.shoot { 0.5 } else { 0.0 };
+    let rocket = !v.kind.gliding();
+    v.drive = crate::motion::Drive {
+        steer: ease(v.drive.steer, stick.x.clamp(-1.0, 1.0)),
+        pitch: ease(v.drive.pitch, if rocket { forward } else { input.pitch }.clamp(-1.0, 1.0)),
+        thrust: if rocket { ease(v.drive.thrust, thrust) } else { 0.0 },
+        crank: v.pedal.crank,
+        brake: input.brake,
+        lift: if v.kind.gliding() { lift } else { 0.0 },
+        speed: v.body.vel.length(),
+    };
     match v.kind {
         Kind::Glider | Kind::PGlider => {
             if v.kind == Kind::PGlider { v.pedal.step(&mut v.body, tap); }
-            let lift = thermals.lift(v.body.pos);
             v.glider.step(&mut v.body, input, lift);
         }
         Kind::Rocket | Kind::SuperRocket => {
@@ -388,13 +411,17 @@ fn fly(
         let gentle = !water && v.body.vel.dot(normal) > -limit && v.body.vel.length() < 26.6667 && h.n.y.abs() > 0.6;
         // A rocket belt stands on the ground and can lift off again.
         if gentle && !v.kind.gliding() {
+            if let Some(k) = h.platform {
+                let ride = col.platforms[k].carry(h.pos, DT) / SCALE;
+                v.body.pos += Vec3::new(ride.x, ride.y, -ride.z);
+            }
             v.body.pos.y = v.body.pos.y.max(h.pos.y / SCALE + 0.05);
             v.body.vel = Vec3::new(v.body.vel.x * 0.8, v.body.vel.y.max(0.0), v.body.vel.z * 0.8);
             *t = v.body.transform();
             return;
         }
         step_off(&mut *player, &v.body, !gentle);
-        if gentle { player.1.translation = h.pos + Vec3::Y * 2.0; }
+        if gentle { player.1.translation = h.pos + Vec3::Y * 2.0; } else { sounds.write(crate::sound::Sound::effect(crate::motion::crash(v.kind), None)); }
         next.set(Mode::Walk);
         return;
     }
@@ -506,7 +533,7 @@ fn attach_pilot(ready: On<WorldInstanceReady>, riders: Query<&Rider>, children: 
     };
     let Some(at) = children.iter_descendants(ready.entity).find(|&e| names.get(e).is_ok_and(|n| n.as_str() == joint)) else { return };
     commands.entity(at).with_children(|c| {
-        c.spawn((Name::new("Pilot"), pose.with_scale(Vec3::splat(0.025)), Visibility::default()))
+        c.spawn((Name::new("Pilot"), pose.with_scale(Vec3::splat(0.025)), Visibility::default(), crate::motion::Pilot(pose)))
             .with_children(|c| crate::player::body(c, &mut meshes, &mut materials, &globals, seated));
     });
 }

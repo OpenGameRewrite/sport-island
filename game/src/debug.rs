@@ -27,6 +27,18 @@ pub fn plugin(app: &mut App) {
     if let Some(at) = std::env::var("SI_SHOOT").ok().and_then(|s| s.parse::<f32>().ok()) {
         app.add_systems(PreUpdate, (move |time: Res<Time>, mut c: ResMut<crate::input::Controls>| if time.elapsed_secs() > at { c.shoot = true; }).after(crate::input::read));
     }
+    // SI_HOLD="x y boost slow" holds the stick and triggers throughout (with SI_FLY).
+    if let Ok(hold) = std::env::var("SI_HOLD") {
+        let v: Vec<f32> = hold.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+        let at = |i: usize| v.get(i).copied().unwrap_or(0.0);
+        let (stick, boost, slow) = (Vec2::new(at(0), at(1)), at(2), at(3));
+        app.add_systems(PreUpdate, (move |mut c: ResMut<crate::input::Controls>| { c.stick = stick; c.boost = boost; c.slow = slow; }).after(crate::input::read));
+    }
+    // SI_AT="x y z" drops the player there once play starts.
+    if let Some(at) = std::env::var("SI_AT").ok().map(|s| s.split_whitespace().filter_map(|v| v.parse().ok()).collect::<Vec<f32>>()).filter(|v| v.len() == 3) {
+        let at = Vec3::new(at[0], at[1], at[2]);
+        app.add_systems(Update, move |mut done: Local<bool>, mut q: Query<(&mut Transform, &mut crate::player::Player)>| for (mut t, mut p) in &mut q { if !std::mem::replace(&mut *done, true) { t.translation = at; p.vel = Vec3::ZERO; } });
+    }
     // SI_EFFECT=name spawns that particle effect 200 units ahead of the camera every second.
     if let Ok(name) = std::env::var("SI_EFFECT") {
         app.add_systems(FixedUpdate, move |mut commands: Commands, time: Res<Time>, lib: Res<crate::particles::ParticleLib>, cam: Single<&GlobalTransform, With<crate::world::MainCamera>>, mut last: Local<f32>| {

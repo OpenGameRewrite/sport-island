@@ -97,10 +97,14 @@ fn walk(c: Res<Controls>, rig: Res<CamRig>, col: Res<Collision>, time: Res<Time>
         pos = waist - Vec3::Y * (HEIGHT * 0.5);
         // Floor: snap to walkable ground when close.
         p.grounded = false;
-        if let Some(hit) = col.ground(pos, HEIGHT * 0.5, if p.vel.y <= 0.0 { 12.0 } else { 0.0 })
+        // Search from where the feet were, so a fast fall cannot skip a thin floor.
+        if let Some(hit) = col.ground(pos, HEIGHT * 0.5 + (-p.vel.y * dt).max(0.0), if p.vel.y <= 0.0 { 12.0 } else { 0.0 })
             && hit.n.y > 0.5
             && p.vel.y <= 0.0
         {
+            // A moving platform carries whoever stands on it.
+            let ride = hit.platform.map_or(Vec3::ZERO, |k| col.platforms[k].carry(hit.pos, dt));
+            pos += ride.with_y(0.0);
             pos.y = hit.pos.y;
             p.vel.y = 0.0;
             p.grounded = true;
@@ -217,13 +221,20 @@ pub fn body(c: &mut ChildSpawnerCommands, meshes: &mut Assets<Mesh>, materials: 
         part(Capsule3d::new(1.9, 4.5).into(), &skin, Transform::from_translation(shoulder + down * 9.0).with_rotation(tilt));
         part(Sphere::new(2.5).mesh().uv(12, 8), &skin, Transform::from_translation(shoulder + down * 13.0));
         // Legs and rounded shoes.
-        if seated {
-            part(Capsule3d::new(2.7, 7.0).into(), &pants, at(x * 3.4, 14.5, 5.0).with_rotation(Quat::from_rotation_x(FRAC_PI_2)));
-            part(Capsule3d::new(2.5, 5.0).into(), &pants, at(x * 3.4, 9.5, 10.5));
-            part(Sphere::new(1.0).mesh().uv(16, 12), &shoes, at(x * 3.4, 4.2, 12.0).with_scale(Vec3::new(3.0, 2.2, 4.4)));
-        } else {
+        if !seated {
             part(Capsule3d::new(2.7, 8.0).into(), &pants, at(x * 3.4, 8.8, 0.0));
             part(Sphere::new(1.0).mesh().uv(16, 12), &shoes, at(x * 3.4, 2.2, 1.2).with_scale(Vec3::new(3.0, 2.2, 4.4)));
+        }
+    }
+    // Seated legs hang from hip pivots so they can pedal.
+    if seated {
+        let (thigh, shin, shoe) = (meshes.add(Capsule3d::new(2.7, 7.0)), meshes.add(Capsule3d::new(2.5, 5.0)), meshes.add(Sphere::new(1.0).mesh().uv(16, 12)));
+        for x in [-1.0, 1.0] {
+            c.spawn((Transform::from_xyz(x * 3.4, 14.5, 0.0), Visibility::default(), crate::motion::Leg(x))).with_children(|l| {
+                l.spawn((Mesh3d(thigh.clone()), MeshMaterial3d(pants.clone()), at(0.0, 0.0, 5.0).with_rotation(Quat::from_rotation_x(FRAC_PI_2))));
+                l.spawn((Mesh3d(shin.clone()), MeshMaterial3d(pants.clone()), at(0.0, -5.0, 10.5)));
+                l.spawn((Mesh3d(shoe.clone()), MeshMaterial3d(shoes.clone()), at(0.0, -10.3, 12.0).with_scale(Vec3::new(3.0, 2.2, 4.4))));
+            });
         }
     }
 }
