@@ -62,6 +62,8 @@ pub struct Plane {
     /// Reference nose direction in the plane's own frame. Contacts disturb it
     /// and it settles back to +Z, so free flight feels no pull.
     contact_ref: Vec3,
+    /// Settings multiplier for the ground assistance (1 = original).
+    pub ground_assist: f32,
 }
 
 #[derive(Resource)]
@@ -71,7 +73,7 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0 }
     }
     /// One original-rate physics tick, independent of rendering and collision.
     #[cfg(test)]
@@ -141,7 +143,9 @@ impl Plane {
         }
         self.ground_strength = self.flight * (self.ground_strength + 0.01 * (ground - self.ground_strength));
         let tangent_speed = (self.vel - self.ground_up * self.vel.dot(self.ground_up)).length();
-        let assistance = self.ground_strength * tangent_speed;
+        // The original gives no way to turn this down; it makes low flying and
+        // tunnels hard, so its strength is a setting (Ground assist).
+        let assistance = self.ground_strength * tangent_speed * self.ground_assist;
         force += self.ground_up * (assistance * 0.1);
         torque += y.cross(self.ground_up) * (assistance * 0.004);
 
@@ -442,6 +446,7 @@ fn fly(
     // bit 0x40 (type 6) selects the water controller, not land assistance.
     let water = ground.as_ref().filter(|h| h.flags & 0x1f == 6);
     if water.is_some() { p.ground_strength = 0.0; }
+    p.ground_assist = save.ground_assist;
     let surface = ground.as_ref().filter(|h| h.flags & 0x1f != 6).map(|h| (h.t, if h.n.y < 0.0 { -h.n } else { h.n }));
     let mut controls = c.clone();
     controls.stick *= save.flight_sensitivity;
@@ -774,6 +779,22 @@ mod tests {
         assert!(p.water_strength<contact*0.1,"pulling up away from contact releases the floats");
         assert!(pose.rotation.is_finite() && (pose.rotation.length()-1.0).abs()<1e-5);
     }
+    #[test]
+    fn ground_assist_setting_scales_the_lift() {
+        let lift = |assist: f32| {
+            let mut pose = Transform::IDENTITY;
+            let mut plane = Plane::new(pose, 7.0);
+            plane.ground_assist = assist;
+            for _ in 0..30 { plane.step_with_surface(&mut pose, &Controls::default(), false, Some((20.0, Vec3::Y))); }
+            plane.vel.y
+        };
+        assert!(lift(1.0) > lift(0.5) && lift(0.5) > lift(0.0));
+        let mut pose = Transform::IDENTITY;
+        let mut free = Plane::new(pose, 7.0);
+        for _ in 0..30 { free.step(&mut pose, &Controls::default(), false); }
+        assert!((lift(0.0) - free.vel.y).abs() < 1e-6, "0% must fly as if no ground were near");
+    }
+
     #[test]
     fn ground_assistance_uses_surface_alignment_and_clearance() {
         let controls = Controls::default();

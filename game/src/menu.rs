@@ -170,14 +170,15 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
     if !title && c.record { m.page = Page::Record; m.scroll = 0; m.direct_record = false; return; }
     if m.page == Page::Settings {
         if c.back || c.pause { m.page = Page::Main; m.sel = 5; return; }
-        navigate(&mut m.sel, 5, &c);
+        navigate(&mut m.sel, 6, &c);
         let step = c.right as i32 - c.left as i32 + c.confirm as i32;
         if step != 0 {
             match m.sel {
                 0 => save.flight_sensitivity = (save.flight_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
                 1 => save.look_sensitivity = (save.look_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
-                2 => save.invert_pitch = !save.invert_pitch,
-                3 => save.speedometer = !save.speedometer,
+                2 => save.ground_assist = (save.ground_assist + step as f32 * 0.1).clamp(0.0, 1.0),
+                3 => save.invert_pitch = !save.invert_pitch,
+                4 => save.speedometer = !save.speedometer,
                 _ => save.fullscreen = !save.fullscreen,
             }
             save.store();
@@ -272,6 +273,7 @@ fn render(
             vec![
                 (texts.ui(Ui::FlightSensitivity).into(), choice(format!("{:.0}%", save.flight_sensitivity * 100.0))),
                 (texts.ui(Ui::LookSensitivity).into(), choice(format!("{:.0}%", save.look_sensitivity * 100.0))),
+                (texts.ui(Ui::GroundAssist).into(), choice(format!("{:.0}%", save.ground_assist * 100.0))),
                 (texts.ui(Ui::InvertPitch).into(), choice(onoff(save.invert_pitch))),
                 (texts.ui(Ui::Speedometer).into(), choice(onoff(save.speedometer))),
                 (texts.ui(Ui::Fullscreen).into(), choice(onoff(save.fullscreen))),
