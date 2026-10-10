@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 pub fn plugin(app: &mut App) {
+    if std::env::var("SI_FRAMES").is_ok() { app.add_systems(Last, |time: Res<Time<Real>>| if time.delta_secs() > 0.1 { info!("SI_FRAMES slow frame {:.0} ms at {:.1} s", time.delta_secs() * 1000.0, time.elapsed_secs()); }); }
     if std::env::var("SI_MEMORY").is_ok() { app.add_systems(Update, memory); }
     if std::env::var("SI_TRAFFIC").is_ok() { app.add_systems(Update, traffic_check); }
     if std::env::var("SI_TEXT_STRESS").is_ok() { app.add_systems(PostUpdate, text_stress.before(bevy::ui::UiSystems::Layout)); }
@@ -19,7 +20,7 @@ pub fn plugin(app: &mut App) {
         app.add_systems(Update, skip_title.before(crate::plane::board));
     }
     if std::env::var("SI_MODEL").is_ok() {
-        app.add_systems(Startup, inspect_model);
+        app.add_systems(Startup, inspect_model).add_systems(Update, |mut cams: Query<&mut Camera, With<crate::world::MainCamera>>| for mut c in &mut cams { c.is_active = false; });
     }
     if std::env::var("SI_LOG").is_ok() {
         app.add_systems(Update, log_state);
@@ -31,7 +32,7 @@ pub fn plugin(app: &mut App) {
         app.add_systems(Update, shoot);
     }
     if std::env::var("SI_CAM").is_ok() {
-        app.add_systems(PostStartup, place_camera);
+        app.add_systems(PostUpdate, place_camera.before(crate::world::sky_follow));
     }
 }
 
@@ -113,7 +114,7 @@ fn visit_point(time: Res<Time>, points: Res<crate::ipoint::IPoints>, mut done: L
     *done = true;
 }
 
-fn place_camera(mut cam: Query<&mut Transform, With<Camera3d>>) {
+fn place_camera(mut cam: Query<&mut Transform, With<crate::world::MainCamera>>) {
     let v: Vec<f32> = std::env::var("SI_CAM").unwrap().split_whitespace().filter_map(|s| s.parse().ok()).collect();
     for mut t in &mut cam {
         t.translation = Vec3::new(v[0], v[1], v[2]);

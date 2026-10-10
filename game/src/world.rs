@@ -39,7 +39,7 @@ pub struct MainCamera;
 
 /// Sky dome for one time of day.
 #[derive(Component)]
-struct Sky(u8);
+pub(crate) struct Sky(u8);
 
 /// Lit windows and lamps shown at night.
 #[derive(Component)]
@@ -54,7 +54,9 @@ pub fn plugin(app: &mut App) {
         .insert_resource(TimeOfDay(time))
         .insert_resource(ClearColor(Color::srgb(0.4, 0.8, 1.0)))
         .add_systems(Startup, setup)
-        .add_systems(Update, (apply_time.run_if(resource_changed::<TimeOfDay>), sky_follow, cycle_time.run_if(crate::menu::playing)));
+        .add_systems(Update, (apply_time.run_if(resource_changed::<TimeOfDay>), cycle_time.run_if(crate::menu::playing)))
+        // After every camera system has moved the camera this frame.
+        .add_systems(PostUpdate, sky_follow.before(TransformSystems::Propagate));
 }
 
 fn island_scene(assets: &AssetServer, i: usize) -> WorldAssetRoot {
@@ -64,7 +66,8 @@ fn island_scene(assets: &AssetServer, i: usize) -> WorldAssetRoot {
 fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     // island.glb scenes: island, island_L, island_R, island_V, sea, under, vr, vr_E, vr_N.
     // island_R duplicates the island for the water reflection pass; not needed here.
-    for i in [0, 3, 4, 5] {
+    commands.spawn(island_scene(&assets, 0)).observe(hide_crater_lid);
+    for i in [3, 4, 5] {
         commands.spawn(island_scene(&assets, i));
     }
     commands.spawn((island_scene(&assets, 1), NightLights, Visibility::Hidden));
@@ -80,6 +83,23 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         MainCamera,
         SpatialListener::new(20.0),
     ));
+}
+
+/// A flat, black-vertex-coloured disc caps the volcano's chimney halfway down,
+/// hiding the open shaft to the lava chamber. Flying through it showed a black
+/// box, so it is removed and the shaft stays open.
+fn hide_crater_lid(ev: On<bevy::world_serialization::WorldInstanceReady>, children: Query<&Children>, q: Query<(&Mesh3d, &bevy::gltf::GltfMaterialName)>, meshes: Res<Assets<Mesh>>, mut commands: Commands) {
+    for e in children.iter_descendants(ev.entity) {
+        let Ok((mesh, name)) = q.get(e) else { continue };
+        if name.0 != "mt_gake" { continue; }
+        let Some(mesh) = meshes.get(&mesh.0) else { continue };
+        let (Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)), Some(bevy::mesh::VertexAttributeValues::Float32x4(col))) =
+            (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.attribute(Mesh::ATTRIBUTE_COLOR)) else { continue };
+        let flat = pos.iter().all(|p| (p[1] - pos[0][1]).abs() < 0.5);
+        if flat && col.iter().all(|c| c[0] + c[1] + c[2] == 0.0) {
+            commands.entity(e).insert(Visibility::Hidden);
+        }
+    }
 }
 
 fn apply_time(
@@ -109,7 +129,7 @@ fn apply_time(
     }
 }
 
-fn sky_follow(cam: Single<&Transform, With<MainCamera>>, mut skies: Query<&mut Transform, (With<Sky>, Without<MainCamera>)>) {
+pub(crate) fn sky_follow(cam: Single<&Transform, With<MainCamera>>, mut skies: Query<&mut Transform, (With<Sky>, Without<MainCamera>)>) {
     for mut t in &mut skies {
         t.translation = Vec3::new(cam.translation.x, 0.0, cam.translation.z);
     }

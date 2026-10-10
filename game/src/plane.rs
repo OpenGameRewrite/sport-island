@@ -60,6 +60,8 @@ pub struct Plane {
     water_strength: f32,
     water_release: f32,
     contact_forward: Vec3,
+    /// Settings multiplier for the pull back toward the reference heading.
+    pub turn_recovery: f32,
 }
 
 #[derive(Resource)]
@@ -69,7 +71,7 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, gun_side: false, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_forward: pose.rotation * Vec3::Z }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, gun_side: false, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_forward: pose.rotation * Vec3::Z, turn_recovery: 1.0 }
     }
     /// One original-rate physics tick, independent of rendering and collision.
     #[cfg(test)]
@@ -147,7 +149,9 @@ impl Plane {
         torque += y.cross(self.up_target) * LEVEL_TORQUE * level;
         // Reference direction is disturbed by contacts and settles back to the
         // nose with the original 0.01..0.05 water-dependent blend.
-        torque += z.cross(self.contact_forward) * 0.007;
+        // The 0.007 gain is the original's; the lagging reference it pulls toward
+        // is reconstructed, so its strength is a player setting (Turn recovery).
+        torque += z.cross(self.contact_forward) * 0.007 * self.turn_recovery;
         self.contact_forward = self.contact_forward.lerp(z, 0.01 + 0.04*self.water_strength).normalize_or_zero();
 
         self.vel = self.vel * 0.997 + force;
@@ -422,6 +426,7 @@ fn fly(
     let mut controls = c.clone();
     controls.stick *= save.flight_sensitivity;
     let pitch = if save.invert_pitch {-controls.stick.y} else {controls.stick.y};
+    p.turn_recovery = save.turn_recovery;
     p.water_contact(&mut t, water.map(|h| (h.t, if h.n.y < 0.0 {-h.n} else {h.n}, h.pos.y)), pitch);
     p.step_with_surface(&mut t, &controls, save.invert_pitch, surface);
 
@@ -729,6 +734,32 @@ mod tests {
         for _ in 0..30 { plane.step(&mut pose, &controls, false); }
         assert_eq!(plane.ctrl, Vec2::ZERO);
         assert!(plane.ang.y.abs() < rate * 0.8, "released steering must decay");
+    }
+
+    #[test]
+    fn turn_recovery_setting_scales_the_swing_back_after_a_turn() {
+        // Yaw reversal after releasing a full turn, for a given recovery strength.
+        let reversal = |strength: f32| {
+            let mut pose = Transform::IDENTITY;
+            let mut plane = Plane::new(pose, 7.0);
+            plane.turn_recovery = strength;
+            let mut c = Controls { stick: Vec2::X, ..default() };
+            let yaw = |p: &Transform| { let n = p.rotation * Vec3::Z; n.x.atan2(n.z) };
+            for _ in 0..60 { plane.step(&mut pose, &c, false); }
+            c.stick = Vec2::ZERO;
+            // Accumulate wrapped deltas: without recovery the turn coasts past ±180°.
+            let (mut total, mut lowest, mut prev) = (0.0f32, 0.0f32, yaw(&pose));
+            for _ in 0..120 {
+                plane.step(&mut pose, &c, false);
+                let d = yaw(&pose) - prev;
+                total += (d + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                prev = yaw(&pose);
+                lowest = lowest.min(total);
+            }
+            total - lowest
+        };
+        assert!(reversal(0.0) < 0.01, "no recovery must not swing back");
+        assert!(reversal(1.0) > reversal(0.5) && reversal(0.5) > 0.01);
     }
 
     #[test]

@@ -57,7 +57,10 @@ fn main() {
         .add_plugins(
             DefaultPlugins
                 .set(AssetPlugin { file_path: asset_dir().to_string_lossy().into_owned(), ..default() })
-                .set(WindowPlugin { primary_window: Some(Window { title: "Sport Island".into(), resolution: (1600, 900).into(), ..default() }), ..default() }),
+                .set(WindowPlugin { primary_window: Some(Window { title: "Sport Island".into(), resolution: (1600, 900).into(),
+                    // Bevy assumes focus until Windows reports otherwise; a window opened in the
+                    // background would then confine the cursor. Wait for a real focus event.
+                    focused: false, ..default() }), ..default() }),
         )
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .init_state::<AppState>()

@@ -50,7 +50,8 @@ fn system_ui(window: &Window, keys: &ButtonInput<KeyCode>) -> bool {
 /// Release before Win+Shift+S/Print Screen opens its overlay, even if Windows
 /// hasn't reported focus loss yet. Returning leaves the game paused until Resume.
 fn release_for_system_ui(window: Single<&Window, With<PrimaryWindow>>, keys: Res<ButtonInput<KeyCode>>, state: Res<State<AppState>>, mut menu: ResMut<Menu>, mut time: ResMut<Time<Virtual>>, mut c: ResMut<Controls>) {
-    if !system_ui(&window, &keys) { return; }
+    // Unattended screenshot runs (SI_SHOT) are usually unfocused.
+    if !system_ui(&window, &keys) || std::env::var_os("SI_SHOT").is_some() { return; }
     *c = Controls { pad: c.pad, ..default() };
     if !menu.open && *state.get() == AppState::Play {
         *menu = Menu { open: true, ..default() };
@@ -58,7 +59,7 @@ fn release_for_system_ui(window: Single<&Window, With<PrimaryWindow>>, keys: Res
     }
 }
 fn cursor(menu: Res<Menu>, state: Res<State<AppState>>, keys: Res<ButtonInput<KeyCode>>, mut window: Single<(&Window, &mut CursorOptions), With<PrimaryWindow>>) {
-    let active = !menu.open && *state.get() == AppState::Play && !system_ui(window.0, &keys);
+    let active = !menu.open && *state.get() == AppState::Play && !system_ui(window.0, &keys) && std::env::var_os("SI_SHOT").is_none();
     // Avoid reapplying capture while a system overlay owns the pointer.
     if window.1.visible == active { window.1.visible = !active; }
     let grab = if active { CursorGrabMode::Confined } else { CursorGrabMode::None };
@@ -132,13 +133,14 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
     if !title && c.record { m.page = Page::Record; m.scroll = 0; m.direct_record = false; return; }
     if m.page == Page::Settings {
         if c.back || c.pause { m.page = Page::Main; m.sel = 5; return; }
-        navigate(&mut m.sel, 4, &c);
+        navigate(&mut m.sel, 5, &c);
         let step = c.right as i32 - c.left as i32 + c.confirm as i32;
         if step != 0 {
             match m.sel {
                 0 => save.flight_sensitivity = (save.flight_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
                 1 => save.look_sensitivity = (save.look_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
-                2 => save.invert_pitch = !save.invert_pitch,
+                2 => save.turn_recovery = (save.turn_recovery + step as f32 * 0.1).clamp(0.0, 2.0),
+                3 => save.invert_pitch = !save.invert_pitch,
                 _ => save.speedometer = !save.speedometer,
             }
             save.store();
@@ -208,7 +210,7 @@ fn render(m: Res<Menu>, state: Res<State<AppState>>, texts: Res<Texts>, langs: R
         }
         Page::Settings => {
             header.0.set_if_neq(Text::new(texts.ui(Ui::Settings))); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
-            vec![format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::FlightSensitivity), save.flight_sensitivity*100.0), format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::LookSensitivity), save.look_sensitivity*100.0), format!("{}: ◀ {} ▶", texts.ui(Ui::InvertPitch), onoff(save.invert_pitch)), format!("{}: ◀ {} ▶", texts.ui(Ui::Speedometer), onoff(save.speedometer))]
+            vec![format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::FlightSensitivity), save.flight_sensitivity*100.0), format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::LookSensitivity), save.look_sensitivity*100.0), format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::TurnRecovery), save.turn_recovery*100.0), format!("{}: ◀ {} ▶", texts.ui(Ui::InvertPitch), onoff(save.invert_pitch)), format!("{}: ◀ {} ▶", texts.ui(Ui::Speedometer), onoff(save.speedometer))]
         }
         Page::Record => {
             header.0.set_if_neq(Text::new(format!("{} — {} / {}   ({}–{} / 80)", texts.ui(Ui::IPoints), save.collected.len(), READINGS, m.scroll+1, m.scroll+LINES)));

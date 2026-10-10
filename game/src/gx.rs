@@ -153,7 +153,9 @@ pub fn plugin(app: &mut App) {
         .init_resource::<GxEnv>()
         .init_resource::<GxMaterials>()
         .init_resource::<TextureAnimations>()
-        .add_systems(Update, (convert, animate_textures, fix_image_formats, update_globals).chain());
+        .add_systems(Update, (convert, animate_textures, fix_image_formats).chain())
+        // After propagation, so lighting/fog use this frame's camera, not last frame's.
+        .add_systems(PostUpdate, update_globals.after(TransformSystems::Propagate));
 }
 
 fn animate_textures(time: Res<Time>, cache: Res<GxMaterials>, mut animations: ResMut<TextureAnimations>, mut materials: ResMut<Assets<GxMaterial>>) {
@@ -262,6 +264,11 @@ fn convert(
         let Some(path) = assets.get_path(&std.0) else { continue };
         let path = path.path().to_string_lossy().replace('\\', "/");
         let Ok(x) = serde_json::from_str::<Extras>(&extras.value) else { continue };
+        // The blimp's panel is a 4x4 grey placeholder the original fills or hides at
+        // runtime; drawn as-is it z-fights with the Wii logo underneath.
+        if x.gx.name == "mt_airship_dummy" {
+            commands.entity(e).insert(Visibility::Hidden);
+        }
         let key = (path.clone(), x.gx.name.clone());
         let handle = cache.0.entry(key).or_insert_with(|| mats.add(decode(&x.gx, &path, &assets, globals.0.clone()))).clone();
         commands.entity(e).remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(handle));
