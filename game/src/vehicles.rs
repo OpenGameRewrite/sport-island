@@ -20,20 +20,24 @@ const GRAVITY: f32 = 9.81;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
+    Plane,
+    Jet,
     Glider,
 }
 
 /// Selectable add-on vehicles, in menu order (after the two Wii planes).
-pub const KINDS: &[Kind] = &[Kind::Glider];
+pub const KINDS: &[Kind] = &[Kind::Plane, Kind::Jet, Kind::Glider];
 
 impl Kind {
-    fn container(self) -> &'static str {
-        match self { Kind::Glider => "glider" }
+    pub fn container(self) -> &'static str {
+        match self { Kind::Plane => "plane", Kind::Jet => "jet", Kind::Glider => "glider" }
     }
     /// The vehicle's name in the 3DS game's text.
     pub fn name_key(self) -> &'static str {
-        match self { Kind::Glider => "Vehicle:GLIDER" }
+        match self { Kind::Plane => "Vehicle:PLANE", Kind::Jet => "Vehicle:JET", Kind::Glider => "Vehicle:GLIDER" }
     }
+    /// Flown by the Wii plane's physics (`plane.rs`) rather than this module.
+    pub fn wii_physics(self) -> bool { matches!(self, Kind::Plane | Kind::Jet) }
 }
 
 /// The add-on vehicle selected in the save, if any.
@@ -212,10 +216,10 @@ fn board(
     if !c.board { return; }
     match mode.get() {
         Mode::Walk => {
-            let Some(kind) = selected(&save) else { return };
+            let Some(kind) = selected(&save).filter(|k| !k.wii_physics()) else { return };
             // The Wii plane's boarding code must not also react.
             c.board = false;
-            let mut body = match kind { Kind::Glider => Body::new(454.5, Vec3::splat(422.799)) };
+            let mut body = match kind { Kind::Glider => Body::new(454.5, Vec3::splat(422.799)), _ => return };
             // Launch 80 m above the player, facing where the camera looks.
             let feet = player.1.translation;
             body.pos = Vec3::new(feet.x, feet.y, -feet.z) / SCALE + Vec3::Y * 80.0;
@@ -267,6 +271,7 @@ fn fly(
             let lift = thermals.lift(v.body.pos);
             v.glider.step(&mut v.body, input, lift);
         }
+        Kind::Plane | Kind::Jet => {}
     }
     v.body.integrate();
     let to = pwr::world(v.body.pos.to_array());
