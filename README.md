@@ -48,6 +48,8 @@ holds briefly before returning to the flight camera. Hold ↑/↓ or use the whe
 to browse i-points; ←/→ changes pages. The paused ⓘ counter also opens the list.
 Each point has a reading for each time of day. Progress saves automatically
 to `SportIsland/save.json` in your system's application-data folder.
+Switching apps or opening Windows capture tools pauses play and releases the
+mouse. Select **Resume** to continue.
 
 ## Work in progress
 

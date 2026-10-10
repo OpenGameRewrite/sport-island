@@ -7,7 +7,7 @@ use crate::world::{MainCamera, TimeOfDay};
 use crate::AppState;
 use bevy::prelude::*;
 use bevy::input::mouse::AccumulatedMouseScroll;
-use bevy::window::{CursorGrabMode, CursorOptions};
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy::picking::hover::Hovered;
 use bevy::ui_widgets::{Activate, Button};
 
@@ -35,7 +35,7 @@ pub fn plugin(app: &mut App) {
         .add_message::<Click>()
         .add_systems(Startup, spawn_ui)
         .add_systems(OnEnter(AppState::Title), |mut m: ResMut<Menu>| { *m = Menu { open: true, ..default() }; })
-        .add_systems(PreUpdate, (mouse_input, controls_input, pause_input).chain().after(crate::input::read))
+        .add_systems(PreUpdate, (release_for_system_ui, mouse_input, controls_input, pause_input).chain().after(crate::input::read))
         .add_systems(Update, orbit_camera.run_if(in_state(AppState::Title)))
         .add_systems(Update, (render, cursor));
 }
@@ -43,9 +43,26 @@ pub fn preview_controls(mut m: ResMut<Menu>) {
     m.open = true; m.sel = 0;
     m.page = match std::env::var("SI_MENU").as_deref() {Ok("settings")=>Page::Settings,Ok("record")=>Page::Record,_=>Page::Controls};
 }
-fn cursor(menu: Res<Menu>, state: Res<State<AppState>>, mut cursor: Single<&mut CursorOptions>) {
-    let active = !menu.open && *state.get() == AppState::Play;
-    cursor.visible = !active; cursor.grab_mode = if active { CursorGrabMode::Confined } else { CursorGrabMode::None };
+fn system_ui(window: &Window, keys: &ButtonInput<KeyCode>) -> bool {
+    !window.focused || keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight, KeyCode::PrintScreen])
+        || (keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]) && keys.pressed(KeyCode::Tab))
+}
+/// Release before Win+Shift+S/Print Screen opens its overlay, even if Windows
+/// hasn't reported focus loss yet. Returning leaves the game paused until Resume.
+fn release_for_system_ui(window: Single<&Window, With<PrimaryWindow>>, keys: Res<ButtonInput<KeyCode>>, state: Res<State<AppState>>, mut menu: ResMut<Menu>, mut time: ResMut<Time<Virtual>>, mut c: ResMut<Controls>) {
+    if !system_ui(&window, &keys) { return; }
+    *c = Controls { pad: c.pad, ..default() };
+    if !menu.open && *state.get() == AppState::Play {
+        *menu = Menu { open: true, ..default() };
+        time.pause();
+    }
+}
+fn cursor(menu: Res<Menu>, state: Res<State<AppState>>, keys: Res<ButtonInput<KeyCode>>, mut window: Single<(&Window, &mut CursorOptions), With<PrimaryWindow>>) {
+    let active = !menu.open && *state.get() == AppState::Play && !system_ui(window.0, &keys);
+    // Avoid reapplying capture while a system overlay owns the pointer.
+    if window.1.visible == active { window.1.visible = !active; }
+    let grab = if active { CursorGrabMode::Confined } else { CursorGrabMode::None };
+    if window.1.grab_mode != grab { window.1.grab_mode = grab; }
 }
 fn spawn_ui(mut commands: Commands, font: Res<crate::lang::UiFont>) {
     let font = TextFont::from(font.0.clone());
@@ -233,6 +250,37 @@ fn render(m: Res<Menu>, state: Res<State<AppState>>, texts: Res<Texts>, langs: R
 mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+    #[test] fn system_overlays_release_capture_and_require_explicit_resume() {
+        let mut w = World::new();
+        w.insert_resource(State::new(AppState::Play)); w.init_resource::<Menu>();
+        w.init_resource::<Controls>(); w.init_resource::<Time<Virtual>>();
+        w.init_resource::<ButtonInput<KeyCode>>();
+        let window = w.spawn((Window::default(), PrimaryWindow, CursorOptions::default())).id();
+        w.run_system_once(cursor).unwrap();
+        assert_eq!(w.get::<CursorOptions>(window).unwrap().grab_mode, CursorGrabMode::Confined);
+        for shortcut in [None, Some(KeyCode::SuperLeft), Some(KeyCode::PrintScreen), Some(KeyCode::AltLeft)] {
+            w.get_mut::<Window>(window).unwrap().focused = shortcut.is_some();
+            if let Some(key) = shortcut { w.resource_mut::<ButtonInput<KeyCode>>().press(key); }
+            w.resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Tab);
+            w.insert_resource(Controls { look: Vec2::ONE, stick: Vec2::ONE, shoot: true, record: true, ..default() });
+            w.run_system_once(release_for_system_ui).unwrap(); w.run_system_once(cursor).unwrap();
+            assert!(w.resource::<Menu>().open && w.resource::<Time<Virtual>>().is_paused());
+            assert_eq!(w.resource::<Controls>().look, Vec2::ZERO);
+            assert!(!w.resource::<Controls>().shoot && !w.resource::<Controls>().record);
+            let options = w.get::<CursorOptions>(window).unwrap();
+            assert!(options.visible && options.grab_mode == CursorGrabMode::None);
+            // Closing the overlay must not immediately recapture the mouse.
+            w.resource_mut::<ButtonInput<KeyCode>>().reset_all();
+            w.get_mut::<Window>(window).unwrap().focused = true;
+            w.run_system_once(release_for_system_ui).unwrap(); w.run_system_once(cursor).unwrap();
+            assert_eq!(w.get::<CursorOptions>(window).unwrap().grab_mode, CursorGrabMode::None);
+            w.resource_scope(|w, mut menu: Mut<Menu>| {
+                w.resource_scope(|w, mut time: Mut<Time<Virtual>>| close(&mut menu, &mut time, &mut w.resource_mut::<Controls>()));
+            });
+            w.run_system_once(cursor).unwrap();
+            assert_eq!(w.get::<CursorOptions>(window).unwrap().grab_mode, CursorGrabMode::Confined);
+        }
+    }
     #[test] fn pointer_activation_selects_rows_and_opens_the_paused_counter() {
         let mut w = World::new();
         w.insert_resource(Menu {open:true,..default()}); w.init_resource::<Controls>();

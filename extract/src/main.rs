@@ -4,6 +4,7 @@
 mod anim;
 mod bmg;
 mod disc;
+mod effects;
 mod gltf;
 mod kcl;
 mod mdl;
@@ -74,10 +75,10 @@ fn main() -> Result<()> {
         None => ask_path().context("usage: sport-island-extract <Wii Sports Resort disc image> [output dir]")?,
     };
     let out = PathBuf::from(args.next().unwrap_or_else(|| "assets".into()));
-    // Optional third argument limits work while developing: text, data, audio, ui, model[:name].
+    // Optional third argument limits work while developing: text, data, audio, ui, effects, model[:name].
     let only = args.next();
     if let Some(part) = only.as_deref() {
-        if !["text", "data", "audio", "ui", "model"].contains(&part) && !part.strip_prefix("model:").is_some_and(|name| MODELS.iter().any(|m| m.2 == name)) {
+        if !["text", "data", "audio", "ui", "effects", "model"].contains(&part) && !part.strip_prefix("model:").is_some_and(|name| MODELS.iter().any(|m| m.2 == name)) {
             bail!("unknown extraction selection: {part}");
         }
     }
@@ -87,7 +88,7 @@ fn main() -> Result<()> {
         bail!("{} is {}, expected Wii Sports Resort (RZTxxx)", image.display(), disc.game_id);
     }
     println!("Extracting {} from {}", disc.game_id, image.display());
-    for d in ["models", "text", "data", "audio", "ui", "textures"] {
+    for d in ["models", "text", "data", "audio", "ui", "textures", "effects"] {
         fs::create_dir_all(out.join(d))?;
     }
     if only.is_none() && out.join("VERSION").exists() { fs::remove_file(out.join("VERSION"))?; }
@@ -124,6 +125,7 @@ fn main() -> Result<()> {
     if want("audio") {
         sound::extract(&mut disc, &out.join("audio"))?;
     }
+    if want("effects") { effects::extract(&mut disc, &out)?; }
     // Partial developer extraction must not mark an incomplete directory playable.
     if only.is_none() { fs::write(out.join("VERSION"), format!("{}\n", env!("CARGO_PKG_VERSION")))?; }
     println!("Done. Assets written to {}", out.display());

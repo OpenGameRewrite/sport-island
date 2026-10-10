@@ -132,8 +132,10 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<As
             37 => ("car", Some(3), 1.0, Some("SE_CMN_ELEC_CAR_RUNNING_1")),
             43 => ("seaguard", None, 1.0, None),
             45 => ("whale", Some(3), 1.0, None),
-            // Original advances normalized clip time by 0.00067 per 60 Hz tick.
-            54 => ("liner", Some(0), 29.0*0.00067, Some("SE_CMN_MOVE_LINER")),
+            // 802a5310 advances the source CHR0 frame by 0.00067 each tick.
+            // 80253228 wraps at the clip's frame count, not at 1. The export
+            // already divides frames by 60, so this is also Bevy's speed ratio.
+            54 => ("liner", Some(0), 0.00067, Some("SE_CMN_MOVE_LINER")),
             _ => continue,
         };
         let path = format!("models/{model}.glb");

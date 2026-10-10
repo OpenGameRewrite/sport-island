@@ -6,6 +6,7 @@ use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 pub fn plugin(app: &mut App) {
     if std::env::var("SI_MEMORY").is_ok() { app.add_systems(Update, memory); }
+    if std::env::var("SI_TRAFFIC").is_ok() { app.add_systems(Update, traffic_check); }
     if std::env::var("SI_TEXT_STRESS").is_ok() { app.add_systems(PostUpdate, text_stress.before(bevy::ui::UiSystems::Layout)); }
     if std::env::var("SI_CONTROLS").is_ok() || std::env::var("SI_MENU").is_ok() {
         app.add_systems(Update, crate::menu::preview_controls);
@@ -46,6 +47,20 @@ fn memory(time: Res<Time<Real>>, mut last: Local<f32>, images: Res<Assets<Image>
 fn text_stress(mut frame: Local<u32>, mut texts: Query<&mut Text>) {
     *frame+=1;
     for mut text in &mut texts { text.0=format!("Font stress {}: é ö ü ñ ⓘ ◀ ▶ ○ ●", *frame); }
+}
+
+/// Native regression with extracted CHR0 data: SI_TRAFFIC=1 SI_PLAY=1 SI_WAIT=12.
+/// A seconds/frame conversion error previously sent the ferry around in 25 s.
+fn traffic_check(time: Res<Time<Real>>, bones: Query<(&Name, &GlobalTransform)>, menu: Res<crate::menu::Menu>, mut sample: Local<Option<(f32, Vec3)>>, mut done: Local<bool>) {
+    if *done || menu.open || time.elapsed_secs()<5.0 { return; }
+    let Some((_, transform)) = bones.iter().find(|(n,_)| n.as_str()=="liner") else { return; };
+    let now = time.elapsed_secs();
+    if let Some((start,pos)) = *sample {
+        if now-start<5.0 { return; }
+        let speed=pos.distance(transform.translation())/(now-start);
+        assert!((5.0..250.0).contains(&speed), "ferry speed {speed} indicates frozen or accelerated animation");
+        info!("SI_TRAFFIC passed: ferry {speed:.1} units/s"); *done=true;
+    } else { *sample=Some((now, transform.translation())); }
 }
 
 /// Exercises the playable loop through normal controls; requires an isolated SI_SAVE.
@@ -169,7 +184,8 @@ fn inspect_model(mut commands: Commands, assets: Res<AssetServer>) {
     let center = Vec3::new(0.0, 20000.0, 0.0);
     commands
         .spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(scene).from_asset(format!("models/{name}.glb")))), Transform::from_translation(center)))
-        .observe(crate::player::no_culling);
+        .observe(crate::player::no_culling)
+        .observe(crate::plane::attach_propeller);
     commands.spawn((
         Camera3d::default(),
         Camera { order: 5, ..default() },

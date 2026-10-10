@@ -241,7 +241,11 @@ struct Flare {
     life: u32,
 }
 #[derive(Component)] struct Speedometer;
-#[derive(Component)] struct FlareTrail(f32);
+#[derive(Component)] struct ProjectileSprite;
+#[derive(Component)] struct FlareCore;
+#[derive(Component)] struct FlareTrail { remaining: f32, lifetime: f32, alpha: f32, vel: Vec3 }
+#[derive(serde::Deserialize)] struct FlareDef { texture: String, color: [u8; 4], size: [f32; 2], life: f32, wrap: [u8; 2] }
+#[derive(Resource)] struct FlareEffects { quad: Handle<Mesh>, parts: std::collections::BTreeMap<String, (FlareDef, Handle<StandardMaterial>)> }
 
 /// Fired when something should pop (bullets, plane body).
 #[derive(Message)]
@@ -256,8 +260,9 @@ pub fn plugin(app: &mut App) {
     let placements: crate::scenery::Placements = crate::read_json("data/island_f0.json");
     let starts = std::array::from_fn(|i| placements.objects.iter().find(|p| p.group == 3 && p.kind == 2 && (p.params[1] >> 16) as usize == i).expect("original water departure missing").transform());
     app.insert_resource(FirstFlight { boarded: false, starts }).add_message::<Shot>()
-        .add_systems(Startup, speedometer_spawn)
+        .add_systems(Startup, (speedometer_spawn, load_flare_effects))
         .add_systems(Update, (speedometer, flare_visuals))
+        .add_systems(PostUpdate, projectile_billboards.before(TransformSystems::Propagate))
         .add_systems(Update, paint)
         .add_systems(Update, board.run_if(crate::menu::playing))
         .add_systems(FixedUpdate, (fly, guns).chain().run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
@@ -382,14 +387,16 @@ fn despawn_plane(mut commands: Commands, planes: Query<Entity, With<Plane>>) {
 }
 
 /// The propeller is a separate model mounted on the `propeller_point` bone.
-fn attach_propeller(ev: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+pub(crate) fn attach_propeller(ev: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     for e in children.iter_descendants(ev.entity) {
         if names.get(e).is_ok_and(|n| n.as_str() == "propeller_point") {
             commands.entity(e).with_child((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/propeller.glb"))), Transform::default(), Propeller));
         }
         if names.get(e).is_ok_and(|n| n.as_str() == "cockpit") {
             commands.entity(e).with_children(|c| {
-                c.spawn((Name::new("Seated pilot"), Transform::from_xyz(0.0, -11.0, 0.0).with_scale(Vec3::splat(0.45)), Visibility::default()))
+                // Cockpit bones mark the seat, not the standing body's feet.
+                // Anchor its hips (y=15) here and fit the legs inside the hull.
+                c.spawn((Name::new("Seated pilot"), Transform::from_xyz(0.0, -3.75, 0.0).with_scale(Vec3::splat(0.25)), Visibility::default()))
                     .with_children(|c| crate::player::body(c, &mut meshes, &mut materials, true));
             });
         }
@@ -434,7 +441,7 @@ fn fly(
     if t.translation.y < water_height { t.translation.y = water_height; p.vel.y = p.vel.y.max(0.0); }
 }
 
-fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut sounds: MessageWriter<crate::sound::Sound>, mut q: Query<(&mut Plane, &Transform)>) {
+fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer>, effects: Res<FlareEffects>, mut sounds: MessageWriter<crate::sound::Sound>, mut q: Query<(&mut Plane, &Transform)>) {
     let Ok((mut p, t)) = q.single_mut() else { return };
     p.gun_cooldown = p.gun_cooldown.saturating_sub(1);
     if c.shoot && p.gun_cooldown == 0 {
@@ -444,8 +451,10 @@ fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer
         let pos = t.transform_point(Vec3::new(side, -2.0, 20.0));
         let vel = p.vel + t.rotation * Vec3::Z * 22.0;
         commands.spawn((
-            WorldAssetRoot(assets.load(GltfAssetLabel::Scene(1).from_asset("models/bullet.glb"))),
-            Transform::from_translation(pos).with_rotation(t.rotation).with_scale(Vec3::splat(1.5)),
+            // The original selects WS2_pln_billbord_bullet (scene 0), with its
+            // bullet_image texture; scene 1 is an untextured solid sphere.
+            WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/bullet.glb"))),
+            Transform::from_translation(pos), ProjectileSprite,
             Bullet { vel, life: 75 },
         ));
         sounds.write(crate::sound::Sound::effect("SE_PLN_SHOOT_BULLET", None));
@@ -453,16 +462,13 @@ fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer
     if c.flare {
         c.flare = false;
         sounds.write(crate::sound::Sound::effect("SE_PLN_ILLUM_FLAME_PLAYER_LAUNCH", None));
+        let (def, material) = &effects.parts["WS2_pln_sign_st"];
         commands.spawn((
-            // signalgun.glb is the pilot's pistol, not its projectile. Recreate
-            // the burning signal with a bright core, glow and smoke trail.
-            Mesh3d(meshes.add(Sphere::new(3.0))),
             Name::new("Signal flare"),
-            MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.75, 0.3), emissive: LinearRgba::new(8.0, 2.5, 0.4, 1.0), unlit: true, ..default() })),
-            Transform::from_translation(t.translation + Vec3::Y * 10.0),
-            PointLight { color: Color::srgb(1.0, 0.4, 0.3), intensity: 5.0e8, range: 3000.0, ..default() },
+            Transform::from_translation(t.translation + Vec3::Y * 10.0), Visibility::default(),
+            PointLight { color: Color::srgba_u8(def.color[0], def.color[1], def.color[2], 255), intensity: 5.0e8, range: 3000.0, ..default() },
             Flare { vel: p.vel * 0.5 + Vec3::Y * 9.0, life: 360 },
-        )).with_child((Mesh3d(meshes.add(Sphere::new(6.0))), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgba(1.0, 0.5, 0.15, 0.16), unlit: true, alpha_mode: AlphaMode::Blend, ..default() })), Transform::default()));
+        )).with_child((Mesh3d(effects.quad.clone()), MeshMaterial3d(material.clone()), Transform::from_scale(Vec3::new(def.size[0]*2.0, def.size[1]*2.0, 1.0)), FlareCore, ProjectileSprite));
     }
 }
 
@@ -475,20 +481,59 @@ fn speedometer(save: Res<Save>, texts: Res<crate::lang::Texts>, planes: Query<&P
     use crate::lang::Ui;
     text.0.set_if_neq(Text::new(format!("{}: {:.0} {}\n{}: {:.0}%\n{}: {:.0}%", texts.ui(Ui::Speed), p.vel.length()*60.0, texts.ui(Ui::Units), texts.ui(Ui::Engine), p.throttle*100.0, texts.ui(if p.boost_sign >= 0.0 {Ui::Boost} else {Ui::Slow}), p.boost_force*100.0)));
 }
-fn flare_visuals(mut commands: Commands, time: Res<Time>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut flares: Query<(&Flare, &Transform, &mut PointLight)>, mut smoke: Query<(Entity, &mut FlareTrail, &mut Transform), Without<Flare>>, mut next: Local<f32>) {
+fn load_flare_effects(mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    let definitions: std::collections::BTreeMap<String, FlareDef> = crate::read_json("effects/flare.json");
+    let parts = definitions.into_iter().map(|(name, def)| {
+        use bevy::image::{ImageSampler, ImageSamplerDescriptor, ImageAddressMode};
+        let mirror = def.wrap == [2,2];
+        let mode = |v| match v { 1 => ImageAddressMode::Repeat, 2 => ImageAddressMode::MirrorRepeat, _ => ImageAddressMode::ClampToEdge };
+        let sampler = ImageSamplerDescriptor { address_mode_u: mode(def.wrap[0]), address_mode_v: mode(def.wrap[1]), ..ImageSamplerDescriptor::linear() };
+        let texture = assets.load_builder().with_settings(move |s: &mut bevy::image::ImageLoaderSettings| s.sampler = ImageSampler::Descriptor(sampler.clone())).load(format!("effects/{}.png", def.texture));
+        let material = materials.add(StandardMaterial {
+            base_color: Color::srgba_u8(def.color[0], def.color[1], def.color[2], 255),
+            base_color_texture: Some(texture),
+            // REFF glow/ring assets store the quadrant centered at bottom left.
+            uv_transform: if mirror {bevy::math::Affine2::from_scale_angle_translation(Vec2::splat(2.0), 0.0, Vec2::new(-1.0,0.0))} else {bevy::math::Affine2::IDENTITY},
+            unlit: true, alpha_mode: if mirror {AlphaMode::Add} else {AlphaMode::Blend}, cull_mode: None, ..default()
+        });
+        (name, (def, material))
+    }).collect();
+    commands.insert_resource(FlareEffects { quad: meshes.add(Rectangle::new(1.0, 1.0)), parts });
+}
+fn projectile_billboards(cam: Single<&GlobalTransform, With<MainCamera>>, parents: Query<&GlobalTransform>, mut sprites: Query<(Option<&ChildOf>, &mut Transform), With<ProjectileSprite>>) {
+    for (parent, mut t) in &mut sprites {
+        t.rotation = parent.and_then(|p| parents.get(p.parent()).ok()).map_or(cam.rotation(), |p| p.rotation().inverse()*cam.rotation());
+    }
+}
+fn flare_visuals(mut commands: Commands, time: Res<Time>, effects: Res<FlareEffects>, mut materials: ResMut<Assets<StandardMaterial>>, mut flares: Query<(&Flare, &Transform, &Children, &mut PointLight)>, mut cores: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>), (With<FlareCore>, Without<Flare>, Without<FlareTrail>)>, mut smoke: Query<(Entity, &mut FlareTrail, &mut Transform, &MeshMaterial3d<StandardMaterial>), (Without<Flare>, Without<FlareCore>)>, mut next: Local<f32>) {
     *next -= time.delta_secs();
     let emit = *next <= 0.0;
     if emit { *next = 0.08; }
-    for (f, t, mut light) in &mut flares {
+    for (f, t, children, mut light) in &mut flares {
         let fade = (f.life as f32 / 60.0).min(1.0);
         light.intensity = 5.0e8 * fade;
+        let phase = if f.life >= 359 { "WS2_pln_sign_st" } else if f.life > 300 { "WS2_pln_sign_tail" } else if f.life > 16 { "WS2_pln_sign_loop" } else { "WS2_pln_sign_end" };
+        let (def, mat) = &effects.parts[phase];
+        for child in children {
+            if let Ok((mut transform, mut material)) = cores.get_mut(*child) {
+                transform.scale = Vec3::new(def.size[0]*2.0, def.size[1]*2.0, 1.0)*fade;
+                material.0 = mat.clone();
+            }
+        }
         if emit {
-            commands.spawn((Mesh3d(meshes.add(Sphere::new(2.0))), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgba(0.8, 0.8, 0.8, 0.18), unlit: true, alpha_mode: AlphaMode::Blend, ..default() })), *t, FlareTrail(1.4)));
+            let (def, mat) = &effects.parts[if f.life > 300 {"WS2_pln_sign_tail_smk"} else {"WS2_pln_sign_smk_bl_loop"}];
+            let alpha = def.color[3] as f32/255.0*0.18;
+            let mut material = materials.get(mat).unwrap().clone(); material.base_color.set_alpha(alpha);
+            let lifetime = def.life.max(0.1);
+            // ponytail: original textures/base parameters; the full REFF child,
+            // TEV and keyframe curves still need a particle-engine rewrite.
+            commands.spawn((Mesh3d(effects.quad.clone()), MeshMaterial3d(materials.add(material)), Transform::from_translation(t.translation).with_scale(Vec3::new(def.size[0]*2.0, def.size[1]*2.0, 1.0)), ProjectileSprite, FlareTrail { remaining: lifetime, lifetime, alpha, vel: Vec3::Y*6.0 }));
         }
     }
-    for (e, mut smoke, mut t) in &mut smoke {
-        smoke.0 -= time.delta_secs(); t.scale += Vec3::splat(time.delta_secs()*2.0); t.translation.y += time.delta_secs()*6.0;
-        if smoke.0 <= 0.0 { commands.entity(e).despawn(); }
+    for (e, mut smoke, mut t, mat) in &mut smoke {
+        smoke.remaining -= time.delta_secs(); t.scale.x += time.delta_secs()*2.0; t.scale.y += time.delta_secs()*2.0; t.translation += smoke.vel*time.delta_secs();
+        if let Some(mut material) = materials.get_mut(&mat.0) { material.base_color.set_alpha(smoke.alpha*(smoke.remaining/smoke.lifetime).max(0.0)); }
+        if smoke.remaining <= 0.0 { commands.entity(e).despawn(); }
     }
 }
 
