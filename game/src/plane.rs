@@ -59,9 +59,9 @@ pub struct Plane {
     ground_strength: f32,
     water_strength: f32,
     water_release: f32,
-    contact_forward: Vec3,
-    /// Settings multiplier for the pull back toward the reference heading.
-    pub turn_recovery: f32,
+    /// Reference nose direction in the plane's own frame. Contacts disturb it
+    /// and it settles back to +Z, so free flight feels no pull.
+    contact_ref: Vec3,
 }
 
 #[derive(Resource)]
@@ -71,7 +71,7 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_forward: pose.rotation * Vec3::Z, turn_recovery: 1.0 }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z }
     }
     /// One original-rate physics tick, independent of rendering and collision.
     #[cfg(test)]
@@ -147,12 +147,13 @@ impl Plane {
 
         let level = 1.0 - self.ctrl.y.abs();
         torque += y.cross(self.up_target) * LEVEL_TORQUE * level;
-        // Reference direction is disturbed by contacts and settles back to the
-        // nose with the original 0.01..0.05 water-dependent blend.
-        // The 0.007 gain is the original's; the lagging reference it pulls toward
-        // is reconstructed, so its strength is a player setting (Turn recovery).
-        torque += z.cross(self.contact_forward) * 0.007 * self.turn_recovery;
-        self.contact_forward = self.contact_forward.lerp(z, 0.01 + 0.04*self.water_strength).normalize_or_zero();
+        // The original pulls the nose (gain 0.007) toward a reference kept in the
+        // plane's local frame and rotated into the world each step. Only contacts
+        // move it, and it settles back to the nose with the 0.01..0.05
+        // water-dependent blend. A world-space reference would lag every turn
+        // and pull the plane back toward its old heading.
+        torque += z.cross(rot * self.contact_ref) * 0.007;
+        self.contact_ref = self.contact_ref.lerp(Vec3::Z, 0.01 + 0.04*self.water_strength).normalize_or(Vec3::Z);
 
         self.vel = self.vel * 0.997 + force;
         let local_t = rot.inverse() * torque;
@@ -212,8 +213,9 @@ impl Plane {
             }
             // Contact frame correction from the original surface callback.
             if self.vel.length_squared()>0.01 {
-                self.contact_forward = self.vel.normalize();
-                let correction = Quat::IDENTITY.slerp(Quat::from_rotation_arc(nose, self.contact_forward),0.01*(1.0-w));
+                let dir = self.vel.normalize();
+                self.contact_ref = t.rotation.inverse() * dir;
+                let correction = Quat::IDENTITY.slerp(Quat::from_rotation_arc(nose, dir),0.01*(1.0-w));
                 t.rotation = (correction*t.rotation).normalize();
             }
             if t.translation.y < height+5.0 { t.translation.y = height+5.0; self.vel.y = self.vel.y.max(0.0); }
@@ -444,7 +446,6 @@ fn fly(
     let mut controls = c.clone();
     controls.stick *= save.flight_sensitivity;
     let pitch = if save.invert_pitch {-controls.stick.y} else {controls.stick.y};
-    p.turn_recovery = save.turn_recovery;
     p.water_contact(&mut t, water.map(|h| (h.t, if h.n.y < 0.0 {-h.n} else {h.n}, h.pos.y)), pitch);
     p.step_with_surface(&mut t, &controls, save.invert_pitch, surface);
 
@@ -837,12 +838,11 @@ mod tests {
     }
 
     #[test]
-    fn turn_recovery_setting_scales_the_swing_back_after_a_turn() {
-        // Yaw reversal after releasing a full turn, for a given recovery strength.
-        let reversal = |strength: f32| {
+    fn free_flight_turns_do_not_swing_back_toward_the_old_heading() {
+        // Yaw reversal after releasing a full turn.
+        let reversal = || {
             let mut pose = Transform::IDENTITY;
             let mut plane = Plane::new(pose, 7.0);
-            plane.turn_recovery = strength;
             let mut c = Controls { stick: Vec2::X, ..default() };
             let yaw = |p: &Transform| { let n = p.rotation * Vec3::Z; n.x.atan2(n.z) };
             for _ in 0..60 { plane.step(&mut pose, &c, false); }
@@ -858,8 +858,7 @@ mod tests {
             }
             total - lowest
         };
-        assert!(reversal(0.0) < 0.01, "no recovery must not swing back");
-        assert!(reversal(1.0) > reversal(0.5) && reversal(0.5) > 0.01);
+        assert!(reversal() < 0.01, "a released turn must not swing back");
     }
 
     #[test]

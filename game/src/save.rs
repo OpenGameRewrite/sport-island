@@ -23,14 +23,13 @@ pub struct Save {
     pub flight_sensitivity: f32,
     pub look_sensitivity: f32,
     pub speedometer: bool,
-    /// Strength of the plane's pull back toward its previous heading after turning.
-    pub turn_recovery: f32,
+    pub fullscreen: bool,
 }
 
 impl Default for Save {
     fn default() -> Self {
         Self { lang: None, collected: BTreeSet::new(), time: 0, plane: 0, invert_pitch: false,
-            bindings: Default::default(), livery: 0, flight_sensitivity: 1.0, look_sensitivity: 1.0, speedometer: false, turn_recovery: 1.0 }
+            bindings: Default::default(), livery: 0, flight_sensitivity: 1.0, look_sensitivity: 1.0, speedometer: false, fullscreen: false }
     }
 }
 
@@ -68,7 +67,6 @@ pub fn plugin(app: &mut App) {
     for v in [&mut save.flight_sensitivity, &mut save.look_sensitivity] {
         *v = if v.is_finite() { v.clamp(0.25, 1.5) } else { 1.0 };
     }
-    save.turn_recovery = if save.turn_recovery.is_finite() { save.turn_recovery.clamp(0.0, 2.0) } else { 1.0 };
     save.collected.retain(|i| (*i as usize) < crate::ipoint::READINGS);
     app.insert_resource::<Save>(save);
 }

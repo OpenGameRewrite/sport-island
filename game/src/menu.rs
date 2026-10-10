@@ -39,7 +39,12 @@ pub fn plugin(app: &mut App) {
         .add_systems(OnEnter(AppState::Title), |mut m: ResMut<Menu>| { *m = Menu { open: true, ..default() }; })
         .add_systems(PreUpdate, (release_for_system_ui, mouse_input, controls_input, pause_input).chain().after(crate::input::read))
         .add_systems(Update, orbit_camera.run_if(in_state(AppState::Title)))
-        .add_systems(Update, (render, cursor));
+        .add_systems(Update, (render, cursor, window_mode));
+}
+fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWindow>>) {
+    use bevy::window::{MonitorSelection, WindowMode};
+    let mode = if save.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
+    if window.mode != mode { window.mode = mode; }
 }
 pub fn preview_controls(mut m: ResMut<Menu>) {
     m.open = true; m.sel = 0;
@@ -171,9 +176,9 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
             match m.sel {
                 0 => save.flight_sensitivity = (save.flight_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
                 1 => save.look_sensitivity = (save.look_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
-                2 => save.turn_recovery = (save.turn_recovery + step as f32 * 0.1).clamp(0.0, 2.0),
-                3 => save.invert_pitch = !save.invert_pitch,
-                _ => save.speedometer = !save.speedometer,
+                2 => save.invert_pitch = !save.invert_pitch,
+                3 => save.speedometer = !save.speedometer,
+                _ => save.fullscreen = !save.fullscreen,
             }
             save.store();
         }
@@ -267,9 +272,9 @@ fn render(
             vec![
                 (texts.ui(Ui::FlightSensitivity).into(), choice(format!("{:.0}%", save.flight_sensitivity * 100.0))),
                 (texts.ui(Ui::LookSensitivity).into(), choice(format!("{:.0}%", save.look_sensitivity * 100.0))),
-                (texts.ui(Ui::TurnRecovery).into(), choice(format!("{:.0}%", save.turn_recovery * 100.0))),
                 (texts.ui(Ui::InvertPitch).into(), choice(onoff(save.invert_pitch))),
                 (texts.ui(Ui::Speedometer).into(), choice(onoff(save.speedometer))),
+                (texts.ui(Ui::Fullscreen).into(), choice(onoff(save.fullscreen))),
             ]
         }
         Page::Record => {

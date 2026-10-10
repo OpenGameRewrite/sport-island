@@ -22,7 +22,7 @@ cargo run --release --locked -j 2 -p sport-island
 
 Choose your language, aircraft and color, then select **Explore**. Menus support
 mouse clicks, arrow keys and gamepads. **Settings** includes flight/camera
-sensitivity, pitch inversion and a speedometer; **Controls** saves your bindings.
+sensitivity, pitch inversion, a speedometer and fullscreen; **Controls** saves your bindings.
 
 ## Controls
 

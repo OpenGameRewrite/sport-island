@@ -102,7 +102,7 @@ pub enum Ui {
     Boost, Slow, Engine, Waiting, MenuHint, ControlsHint, RecordHint, NextBoarding,
     Red, White, Yellow, Orange, Blue, Space, LeftShift, LeftCtrl, MouseLeft, MouseRight, MouseMiddle,
     DLeft, DRight, DUp, DDown,
-    South, East, West, North, Escape, Select, RightStick, Mouse, TurnRecovery,
+    South, East, West, North, Escape, Select, RightStick, Mouse, Fullscreen,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -160,7 +160,7 @@ const UI: &[[&str; 5]] = &[
     ["Back / Select", "Retour / Select", "Zurück / Select", "Atrás / Select", "Indietro / Select"],
     ["Right stick", "Stick droit", "Rechter Stick", "Stick derecho", "Stick destro"],
     ["Mouse", "Souris", "Maus", "Ratón", "Mouse"],
-    ["Turn recovery", "Retour après virage", "Rückstellung nach Kurven", "Retorno tras girar", "Ritorno dopo la virata"],
+    ["Fullscreen", "Plein écran", "Vollbild", "Pantalla completa", "Schermo intero"],
 ];
 
 const ACTIONS: &[[&str; 5]] = &[
