@@ -664,6 +664,7 @@ fn chase_camera(
     let (p, root) = *plane;
     let t = p.pose(root, fixed.overstep_fraction());
     let dt = time.delta_secs();
+    if c.recenter { *look = Vec2::ZERO; }
     if c.look.length() > 0.0005 {
         *look = (*look + c.look * Vec2::new(-1.0, 1.0)).clamp(Vec2::new(-2.5, -1.2), Vec2::new(2.5, 1.2));
         *idle = 0.0;

@@ -137,6 +137,12 @@ fn camera(
     player: Single<&Transform, With<Player>>,
     mut cam: Single<&mut Transform, (With<MainCamera>, Without<Player>)>,
 ) {
+    if c.recenter {
+        // Behind the player's facing (+Z), at the default height.
+        let facing = player.rotation * Vec3::Z;
+        rig.yaw = (-facing.x).atan2(-facing.z);
+        rig.pitch = -0.25;
+    }
     rig.yaw -= c.look.x;
     rig.pitch = (rig.pitch - c.look.y).clamp(-1.2, 0.6);
     let target = player.translation + Vec3::Y * HEIGHT * 1.1;

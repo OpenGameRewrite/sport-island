@@ -247,6 +247,8 @@ fn render(
     let wide = m.page == Page::Controls || m.page == Page::Record;
     let width = px(if wide {900} else {640});
     if panel.width != width { panel.width = width; }
+    let gap = px(if wide {4} else {8});
+    if panel.row_gap != gap { panel.row_gap = gap; }
     let title = *state.get() == AppState::Title;
     let onoff = |b| texts.ui(if b {Ui::On} else {Ui::Off});
     let mut selected = Some(m.sel);

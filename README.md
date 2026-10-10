@@ -40,6 +40,7 @@ sensitivity, pitch inversion and a speedometer; **Controls** saves your bindings
 | Time of day | T | Back / Select |
 | i-point list | Tab | LB / L1 |
 | Speedometer | V | RB / R1 |
+| Recenter camera | R | RS / R3 (right stick click) |
 
 Pull back on the stick (S) to take off from the water. Boost and slowing are
 temporary impulses: release and press again to repeat them. The optional

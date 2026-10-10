@@ -176,6 +176,7 @@ const ACTIONS: &[[&str; 5]] = &[
     ["Pause", "Pause", "Pause", "Pausa", "Pausa"], ["Time of day", "Moment de la journée", "Tageszeit", "Hora del día", "Ora del giorno"],
     ["i-point list", "Liste des points ⓘ", "ⓘ-Punkteliste", "Lista de puntos ⓘ", "Elenco punti ⓘ"],
     ["Speedometer", "Indicateur de vitesse", "Geschwindigkeitsanzeige", "Velocímetro", "Indicatore di velocità"],
+    ["Recenter camera", "Recentrer la caméra", "Kamera zentrieren", "Centrar cámara", "Centra la telecamera"],
 ];
 
 pub fn plugin(app: &mut App) {
