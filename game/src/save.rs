@@ -29,12 +29,14 @@ pub struct Save {
     pub ground_assist: f32,
     /// Mii favourite colour (`colortex.val` order) for add-on vehicle liveries.
     pub favorite: u8,
+    /// Pilotwings Resort collectibles found, by set (`collect::SETS`).
+    pub found: std::collections::BTreeMap<String, BTreeSet<u16>>,
 }
 
 impl Default for Save {
     fn default() -> Self {
         Self { lang: None, collected: BTreeSet::new(), time: 0, plane: 0, invert_pitch: false,
-            bindings: Default::default(), livery: 0, flight_sensitivity: 1.0, look_sensitivity: 1.0, speedometer: false, fullscreen: false, ground_assist: 1.0, favorite: 0 }
+            bindings: Default::default(), livery: 0, flight_sensitivity: 1.0, look_sensitivity: 1.0, speedometer: false, fullscreen: false, ground_assist: 1.0, favorite: 0, found: Default::default() }
     }
 }
 

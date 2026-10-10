@@ -77,6 +77,16 @@ pub struct Plane {
     pub jet: bool,
     pub turbo: f32,
     pub burning: bool,
+    /// Pilotwings Resort planes barrel-roll on a double tap of the stick: a
+    /// visual roll (`twist`, radians) on top of the flight model. `roll` is
+    /// the direction under way (0 when level), `last_roll` the previous one.
+    pub rolls: bool,
+    pub twist: f32,
+    pub roll: f32,
+    pub last_roll: f32,
+    pub since_roll: u32,
+    tap: (f32, u32),
+    stick_x: f32,
 }
 
 #[derive(Resource)]
@@ -86,15 +96,42 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0, jet: false, turbo: 1.0, burning: false }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0, jet: false, turbo: 1.0, burning: false, rolls: false, twist: 0.0, roll: 0.0, last_roll: 0.0, since_roll: u32::MAX, tap: (0.0, u32::MAX), stick_x: 0.0 }
     }
     /// One original-rate physics tick, independent of rendering and collision.
+    /// Displayed bank (radians, right positive) on top of the flight model.
+    pub fn bank(&self) -> f32 { self.bank }
+
+    /// Two quick pushes of the stick to one side start a 0.8 s barrel roll.
+    fn barrel_roll(&mut self, x: f32) {
+        const TAP_FRAMES: u32 = 18;
+        self.tap.1 = self.tap.1.saturating_add(1);
+        self.since_roll = self.since_roll.saturating_add(1);
+        if x.abs() > 0.8 && self.stick_x.abs() <= 0.8 {
+            let dir = x.signum();
+            if self.roll == 0.0 && self.tap.0 == dir && self.tap.1 <= TAP_FRAMES {
+                self.roll = dir;
+                self.tap.1 = u32::MAX;
+            } else {
+                self.tap = (dir, 0);
+            }
+        }
+        self.stick_x = x;
+        if self.roll != 0.0 {
+            self.twist += self.roll * std::f32::consts::TAU / 48.0;
+            if self.twist.abs() >= std::f32::consts::TAU {
+                (self.twist, self.last_roll, self.roll, self.since_roll) = (0.0, self.roll, 0.0, 0);
+            }
+        }
+    }
+
     #[cfg(test)]
     fn step(&mut self, t: &mut Transform, c: &Controls, invert_pitch: bool) {
         self.step_with_surface(t, c, invert_pitch, None);
     }
 
     fn step_with_surface(&mut self, t: &mut Transform, c: &Controls, invert_pitch: bool, surface: Option<(f32, Vec3)>) {
+        if self.rolls { self.barrel_roll(c.stick.x); }
         self.previous = *t;
         let rot = t.rotation;
         let (x, y, z) = (rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z);
@@ -354,6 +391,7 @@ pub fn board(
             first.boarded = true;
             let addon = crate::vehicles::selected(&save);
             plane.jet = addon == Some(crate::vehicles::Kind::Jet);
+            plane.rolls = addon.is_some();
             commands
                 .spawn((
                     plane,
@@ -691,7 +729,7 @@ fn visuals(time: Res<Time>, fixed: Res<Time<Fixed>>, planes: Query<(&Plane, &Tra
     let pose = p.pose(root, fixed.overstep_fraction());
     for mut t in &mut models {
         t.translation = root.rotation.inverse() * (pose.translation - root.translation);
-        t.rotation = root.rotation.inverse() * pose.rotation * Quat::from_rotation_z(p.bank);
+        t.rotation = root.rotation.inverse() * pose.rotation * Quat::from_rotation_z(p.bank + p.twist);
     }
     for mut t in &mut props {
         t.rotate_local_z(time.delta_secs() * (20.0 + 40.0 * p.throttle));
@@ -781,6 +819,18 @@ fn trails(time: Res<Time>, fixed: Res<Time<Fixed>>, plane: Single<(&Plane, &Tran
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn double_tap_barrel_rolls_once() {
+        let mut p = Plane::new(Transform::default(), 7.0);
+        for x in [1.0, 0.0, 1.0] { p.barrel_roll(x); }
+        assert_eq!(p.roll, 1.0);
+        for _ in 0..60 { p.barrel_roll(1.0); }
+        assert_eq!((p.roll, p.twist, p.last_roll), (0.0, 0.0, 1.0));
+        // A single push only turns.
+        for x in [0.0, -1.0, -1.0] { p.barrel_roll(x); }
+        assert_eq!(p.roll, 0.0);
+    }
 
     #[test]
     fn chase_camera_turns_over_only_well_past_vertical() {

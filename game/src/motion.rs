@@ -201,11 +201,12 @@ fn loops(
 }
 
 /// One-shot cues on state changes: braking, hearts, exhaustion and turbo.
-fn cues(save: Res<Save>, vehicles: Query<&Vehicle>, planes: Query<&Plane>, mut last: Local<Option<(bool, u32, bool, bool, f32)>>, mut out: MessageWriter<Sound>) {
+fn cues(save: Res<Save>, vehicles: Query<&Vehicle>, planes: Query<&Plane>, mut last: Local<Option<(bool, u32, bool, bool, f32, bool)>>, mut out: MessageWriter<Sound>) {
+    let selected = vehicles::selected(&save);
     let now = if let Ok(v) = vehicles.single() {
-        (v.drive.brake, v.hearts(), v.exhausted(), false, 1.0)
-    } else if let (Ok(p), Some(Kind::Jet)) = (planes.single(), vehicles::selected(&save)) {
-        (false, 0, false, p.burning, p.turbo)
+        (v.drive.brake, v.hearts(), v.exhausted(), false, 1.0, false)
+    } else if let (Ok(p), Some(_)) = (planes.single(), selected) {
+        (false, 0, false, p.burning, if p.jet { p.turbo } else { 1.0 }, p.roll != 0.0)
     } else {
         *last = None;
         return;
@@ -218,6 +219,7 @@ fn cues(save: Res<Save>, vehicles: Query<&Vehicle>, planes: Query<&Plane>, mut l
     if now.2 && !before.2 { out.write(Sound::effect("pwr/pglider_overheated", None)); }
     if now.3 && !before.3 { out.write(Sound::effect("pwr/plane_turbo", None)); }
     if now.4 >= 1.0 && before.4 < 1.0 { out.write(Sound::effect("pwr/jet_turbo_recharge", None)); }
+    if now.5 && !before.5 { out.write(Sound::effect(if selected == Some(Kind::Jet) { "pwr/jet_pln_twiststart" } else { "pwr/plane_pln_twiststart" }, None)); }
 }
 
 /// The crash sound for a vehicle thrown off by a hard landing.

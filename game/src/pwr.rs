@@ -27,14 +27,14 @@ pub fn frame(f: &[f32]) -> Transform {
     Transform { translation: world([f[9], f[10], f[11]]), rotation: Quat::from_mat3(&(mirror * basis * mirror)).normalize(), scale: Vec3::splat(SCALE) }
 }
 
-fn data(rel: &str) -> Value {
+pub(crate) fn data(rel: &str) -> Value {
     std::fs::read(crate::asset_dir().join("pwr/data").join(rel)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null)
 }
 
-fn floats(v: &Value) -> Vec<f32> { v.as_array().into_iter().flatten().filter_map(|x| x.as_f64()).map(|x| x as f32).collect() }
+pub(crate) fn floats(v: &Value) -> Vec<f32> { v.as_array().into_iter().flatten().filter_map(|x| x.as_f64()).map(|x| x as f32).collect() }
 
 /// `object` entries of a placement table such as `def_objects.val`.
-fn objects(table: &Value) -> Vec<Value> { table["objects"][0]["object"].as_array().cloned().unwrap_or_default() }
+pub(crate) fn objects(table: &Value) -> Vec<Value> { table["objects"][0]["object"].as_array().cloned().unwrap_or_default() }
 
 /// Eyepoint id of the i-point the landing-pad blimp carries.
 const BLIMP_POINT: u32 = 100;

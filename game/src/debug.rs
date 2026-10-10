@@ -196,12 +196,13 @@ pub fn log_state(
     }
     *last = time.elapsed_secs();
     info!(
-        "t={:.1} state={:?} mode={:?} players={:?} planes={:?} cam={:?}",
+        "t={:.1} state={:?} mode={:?} players={:?} planes={:?} up={:?} cam={:?}",
         time.elapsed_secs(),
         state.get(),
         mode.get(),
         player.iter().map(|t| t.translation).collect::<Vec<_>>(),
         planes.iter().map(|t| t.translation).collect::<Vec<_>>(),
+        planes.iter().map(|t| (t.rotation * Vec3::Y * 100.0).round() / 100.0).collect::<Vec<_>>(),
         cam.iter().map(|t| t.translation).collect::<Vec<_>>()
     );
 }

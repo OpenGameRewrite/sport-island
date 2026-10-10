@@ -66,7 +66,7 @@ The game works the same without it. With it, the aircraft choice adds the
 
 | Vehicle | Flight | Controls beyond steering |
 |---|---|---|
-| Plane, Turbo Jet | The Wii plane's physics with the 3DS models | Jet: hold RT / Shift to burn the turbo meter |
+| Plane, Turbo Jet | The Wii plane's physics with the 3DS models | Double-tap the stick sideways to barrel-roll; Jet: hold RT / Shift to burn the turbo meter |
 | Hang Glider | The 3DS glider: ride thermals (the swirling columns) to climb | LT / Ctrl or B / C: brake |
 | Pedal Glider | Hang glider plus pedals | Tap RT / Shift (or A / Space) to pedal; pedalling too fast drains the hearts |
 | Rocket Belt, Super Rocket Belt | The 3DS jets; the pilot stays upright and turns on the spot | RT / Shift: full jets, A / Space: light throttle, LT / Ctrl: air brake; the stick leans the jets |
@@ -76,7 +76,13 @@ glider's crank and propellers, swivelling rocket nozzles and their flames, and a
 pilot who leans and pedals. The island also gains the 3DS floating landing pads,
 tugboat decks and the cruising landing-pad blimp (all solid: land or walk on
 them, and the blimp carries you along), the Boost Gate (fly through it for a
-burst of speed) and the i-points Pilotwings Resort added. Shared i-points keep the Wii wording; build with
+burst of speed) and the i-points Pilotwings Resort added.
+
+Each vehicle class also has its 3DS free-flight collectibles, shown only while
+you fly it: 60 Gold Rings for the gliders, 60 Stunt Rings for the plane and jet
+(fly through while leaning, upside down or barrel-rolling as the ring asks;
+spinning rings want a roll that way) and 60 Mii Trophies for the rocket belts,
+plus 40 balloons each. The counts show under the i-point counter and are saved. Shared i-points keep the Wii wording; build with
 `--features pwr-text` to read the 3DS wording instead.
 
 ## Work in progress
