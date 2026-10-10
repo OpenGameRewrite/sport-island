@@ -12,6 +12,7 @@ use crate::save::Save;
 use crate::world::MainCamera;
 use crate::{AppState, Mode};
 use bevy::prelude::*;
+use bevy::world_serialization::WorldInstanceReady;
 use serde_json::Value;
 
 /// One 3DS frame.
@@ -23,18 +24,26 @@ pub enum Kind {
     Plane,
     Jet,
     Glider,
+    PGlider,
+    Rocket,
+    SuperRocket,
 }
 
 /// Selectable add-on vehicles, in menu order (after the two Wii planes).
-pub const KINDS: &[Kind] = &[Kind::Plane, Kind::Jet, Kind::Glider];
+pub const KINDS: &[Kind] = &[Kind::Plane, Kind::Jet, Kind::Glider, Kind::PGlider, Kind::Rocket, Kind::SuperRocket];
 
 impl Kind {
     pub fn container(self) -> &'static str {
-        match self { Kind::Plane => "plane", Kind::Jet => "jet", Kind::Glider => "glider" }
+        match self { Kind::Plane => "plane", Kind::Jet => "jet", Kind::Glider => "glider", Kind::PGlider => "pglider", Kind::Rocket => "rocket", Kind::SuperRocket => "superrocket" }
     }
     /// The vehicle's name in the 3DS game's text.
     pub fn name_key(self) -> &'static str {
-        match self { Kind::Plane => "Vehicle:PLANE", Kind::Jet => "Vehicle:JET", Kind::Glider => "Vehicle:GLIDER" }
+        match self { Kind::Plane => "Vehicle:PLANE", Kind::Jet => "Vehicle:JET", Kind::Glider => "Vehicle:GLIDER", Kind::PGlider => "Vehicle:PGLIDER", Kind::Rocket => "Vehicle:ROCKET", Kind::SuperRocket => "Vehicle:SUPERROCKET" }
+    }
+    fn gliding(self) -> bool { matches!(self, Kind::Glider | Kind::PGlider) }
+    /// `vehicle.val` chase camera: distance behind and height above, metres.
+    fn camera(self) -> (f32, f32) {
+        match self { Kind::PGlider => (8.0, 0.5), Kind::Rocket | Kind::SuperRocket => (3.5, 0.0), _ => (9.9, 2.2) }
     }
     /// Flown by the Wii plane's physics (`plane.rs`) rather than this module.
     pub fn wii_physics(self) -> bool { matches!(self, Kind::Plane | Kind::Jet) }
@@ -152,6 +161,79 @@ impl Glider {
     }
 }
 
+/// Pedal glider drive (3DS `PGlider`): taps spin the crank, the crank pushes
+/// towards a speed, and stamina limits how hard the rider can keep it up.
+#[derive(Clone, Debug)]
+pub struct Pedal {
+    /// Crank speed, radians per second.
+    crank: f32,
+    pub stamina: f32,
+    pub exhausted: bool,
+    since_tap: f32,
+}
+
+impl Default for Pedal {
+    fn default() -> Self { Self { crank: 0.0, stamina: 1.0, exhausted: false, since_tap: 9.0 } }
+}
+
+impl Pedal {
+    pub fn step(&mut self, b: &mut Body, tap: bool) {
+        self.since_tap += DT;
+        if tap && !self.exhausted {
+            // Pedalling faster than every 0.75 s tires the rider three times as much.
+            self.stamina = (self.stamina - if self.since_tap < 0.75 { 0.0625 } else { 0.020625 }).max(0.0);
+            if self.stamina < 0.075 { self.exhausted = true; }
+            self.since_tap = 0.0;
+        }
+        if self.since_tap > 1.8 {
+            self.stamina = (self.stamina + 0.00417084).min(1.0);
+            if self.stamina > 0.325 { self.exhausted = false; }
+        }
+        let target = if self.since_tap < 1.0 && !self.exhausted { std::f32::consts::TAU } else { 0.0 };
+        self.crank += (target - self.crank).clamp(-0.0524123, 0.104825);
+        let z = b.rot * Vec3::Z;
+        let push = (self.crank.max(0.0) * 160.0 * 0.444444 / std::f32::consts::TAU - b.vel.dot(z)) * 0.05;
+        b.accelerate(z * push);
+    }
+}
+
+/// Rocket belt (3DS `Rocket` flight state): jets along the tilted body axis,
+/// a light throttle that eases sink, an air brake that holds position, and
+/// attitude control that keeps the pilot upright and turns on the spot.
+#[derive(Clone, Debug)]
+pub struct Rocket { power: f32 }
+
+/// Rocket controls: `tilt` > 0 leans the jets forward, `steer` > 0 turns right.
+#[derive(Default, Clone, Copy)]
+pub struct RocketInput { pub thrust: bool, pub light: bool, pub hover: bool, pub tilt: f32, pub steer: f32 }
+
+impl Rocket {
+    pub fn step(&self, b: &mut Body, input: RocketInput) {
+        let (x, y, z) = b.axes();
+        let mut accel = if input.hover {
+            Vec3::Y * GRAVITY - b.vel / (b.vel.length().max(1.0) * DT)
+        } else {
+            -b.vel * 0.5
+        };
+        let jets = if input.thrust { 29.43 } else if input.light { remap(8.88889, -8.88889, 7.3575, 22.0725, b.vel.y.min(0.0) * (1.0 - input.tilt.abs())) } else { 0.0 };
+        if jets > 0.0 {
+            let lean = input.tilt.clamp(-1.0, 1.0) * std::f32::consts::FRAC_PI_2;
+            let fade = remap(1372.0, 1373.0, 1.0, 0.0, b.pos.y);
+            accel += (y * lean.cos() + z * lean.sin()) * jets * self.power * fade;
+            if b.vel.y > 0.0 { accel.y -= b.vel.y * 5.0 * remap(1322.5, 1372.5, 0.0, 1.0, b.pos.y); }
+        }
+        if b.pos.y < 0.0 {
+            accel.y += remap(0.0, 5.0, 0.0, 39.24, -b.pos.y);
+            accel -= b.vel * remap(0.0, 0.25, 0.0, 0.5, -b.pos.y);
+        }
+        b.accelerate(accel);
+        let roll = (x.y * -5.0 - b.ang.dot(z) * 4.0).clamp(-10.0, 10.0);
+        let pitch = (z.y * 20.0 - b.ang.dot(x) * 4.0).clamp(-10.0, 10.0);
+        let yaw = ((input.steer * 1.0472 - b.ang.dot(y)) * 8.0).clamp(-10.0, 10.0);
+        b.torque += (z * roll * b.inertia.z + x * pitch * b.inertia.x + y * yaw * b.inertia.y) * 10.0;
+    }
+}
+
 /// Air columns that lift gliders: cylinders fitted to the 3DS bounds.
 #[derive(Resource, Default)]
 pub struct Thermals(Vec<Thermal>);
@@ -185,6 +267,9 @@ pub struct Vehicle {
     pub kind: Kind,
     pub body: Body,
     glider: Glider,
+    pedal: Pedal,
+    rocket: Rocket,
+    tapped: bool,
 }
 
 pub fn plugin(app: &mut App) {
@@ -219,15 +304,18 @@ fn board(
             let Some(kind) = selected(&save).filter(|k| !k.wii_physics()) else { return };
             // The Wii plane's boarding code must not also react.
             c.board = false;
-            let mut body = match kind { Kind::Glider => Body::new(454.5, Vec3::splat(422.799)), _ => return };
-            // Launch 80 m above the player, facing where the camera looks.
+            // Every 3DS vehicle body: 454.5 kg, inertia 422.8 on each axis.
+            let mut body = Body::new(454.5, Vec3::splat(422.799));
+            // Gliders launch above the player, rocket belts lift off where they stand.
             let feet = player.1.translation;
-            body.pos = Vec3::new(feet.x, feet.y, -feet.z) / SCALE + Vec3::Y * 80.0;
+            let (height, speed) = match kind { Kind::Glider => (80.0, 11.1111), Kind::PGlider => (50.0, 11.1111), _ => (1.0, 0.0) };
+            body.pos = Vec3::new(feet.x, feet.y, -feet.z) / SCALE + Vec3::Y * height;
             body.rot = Quat::from_rotation_y(-rig.yaw);
-            body.vel = body.rot * Vec3::Z * 11.1111;
+            body.vel = body.rot * Vec3::Z * speed;
             let t = body.transform();
-            commands.spawn((Vehicle { kind, body, glider: Glider::default() }, Flying, t, Visibility::default())).with_children(|v| {
-                v.spawn(WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("pwr/models/{}_lod1.glb", kind.container())))));
+            let rocket = Rocket { power: if kind == Kind::SuperRocket { 1.3 } else { 1.0 } };
+            commands.spawn((Vehicle { kind, body, glider: Glider::default(), pedal: Pedal::default(), rocket, tapped: false }, Flying, t, Visibility::default())).with_children(|v| {
+                v.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("pwr/models/{}_lod1.glb", kind.container())))), Rider(kind))).observe(attach_pilot);
             });
             *player.2 = Visibility::Hidden;
             next.set(Mode::Fly);
@@ -263,13 +351,22 @@ fn fly(
     let Ok((mut v, mut t)) = q.single_mut() else { return };
     let stick = c.stick * save.flight_sensitivity;
     // The Wii controls push the stick up to dive; the 3DS pitch input raises the nose.
-    let input = Input { pitch: if save.invert_pitch { stick.y } else { -stick.y }, steer: stick.x, brake: c.slow > 0.5 || c.cut };
+    let forward = if save.invert_pitch { -stick.y } else { stick.y };
+    let input = Input { pitch: -forward, steer: stick.x, brake: c.slow > 0.5 || c.cut };
     let v = &mut *v;
     let from = pwr::world(v.body.pos.to_array());
+    let pedalling = c.boost > 0.5 || c.shoot;
+    let tap = pedalling && !v.tapped;
+    v.tapped = pedalling;
     match v.kind {
-        Kind::Glider => {
+        Kind::Glider | Kind::PGlider => {
+            if v.kind == Kind::PGlider { v.pedal.step(&mut v.body, tap); }
             let lift = thermals.lift(v.body.pos);
             v.glider.step(&mut v.body, input, lift);
+        }
+        Kind::Rocket | Kind::SuperRocket => {
+            let r = RocketInput { thrust: c.boost > 0.5, light: c.shoot, hover: c.slow > 0.5, tilt: forward, steer: stick.x };
+            v.rocket.step(&mut v.body, r);
         }
         Kind::Plane | Kind::Jet => {}
     }
@@ -278,12 +375,23 @@ fn fly(
     // Ground contact: land gently, otherwise the pilot falls off (3DS limits:
     // 13.3 m/s into the ground or 26.7 m/s overall).
     let travel = to - from;
-    let hit = col.raycast(from, travel.normalize_or_zero(), travel.length() + 0.95 * SCALE);
-    let below = col.ground(to, 0.0, 0.95 * SCALE);
+    // Gliders land on their wheels/feet (`ground_dy`); rocket belts touch with their boots.
+    let reach = if v.kind.gliding() { 0.95 } else { 0.05 } * SCALE;
+    let hit = col.raycast(from, travel.normalize_or_zero(), travel.length() + reach);
+    let below = col.ground(to + Vec3::Y * reach, 0.0, 2.0 * reach);
     if let Some(h) = hit.or(below) {
         let normal = Vec3::new(h.n.x, h.n.y, -h.n.z) * h.n.y.signum();
         let water = h.flags & 0x1f == 6;
-        let gentle = !water && v.body.vel.dot(normal) > -13.3333 && v.body.vel.length() < 26.6667 && h.n.y.abs() > 0.6;
+        // Rocket belts touch down at up to 15.6 m/s, gliders at 13.3 m/s.
+        let limit = if v.kind.gliding() { 13.3333 } else { 15.5556 };
+        let gentle = !water && v.body.vel.dot(normal) > -limit && v.body.vel.length() < 26.6667 && h.n.y.abs() > 0.6;
+        // A rocket belt stands on the ground and can lift off again.
+        if gentle && !v.kind.gliding() {
+            v.body.pos.y = v.body.pos.y.max(h.pos.y / SCALE + 0.05);
+            v.body.vel = Vec3::new(v.body.vel.x * 0.8, v.body.vel.y.max(0.0), v.body.vel.z * 0.8);
+            *t = v.body.transform();
+            return;
+        }
         step_off(&mut *player, &v.body, !gentle);
         if gentle { player.1.translation = h.pos + Vec3::Y * 2.0; }
         next.set(Mode::Walk);
@@ -311,21 +419,22 @@ fn camera(
     } else {
         *look *= (-0.7 * dt).exp();
     }
+    // Gliders frame their travel; rocket belts look where the pilot faces.
     let travel = Vec3::new(v.body.vel.x, 0.0, -v.body.vel.z);
     let nose = t.rotation * Vec3::NEG_Z;
-    let flat = if travel.length() > 1.0 { travel } else { nose.with_y(0.0) };
+    let flat = if travel.length() > 1.0 && v.kind.gliding() { travel } else { nose.with_y(0.0) };
     if *heading == Vec3::ZERO { *heading = flat.normalize_or(Vec3::NEG_Z); }
     *heading = heading.lerp(flat.normalize_or(*heading), 1.0 - (-3.0 * dt).exp()).normalize_or(Vec3::NEG_Z);
     let yaw = (-heading.x).atan2(-heading.z);
     let fwd = Quat::from_euler(EulerRot::YXZ, yaw + look.x, -look.y - 0.12, 0.0) * Vec3::NEG_Z;
-    // glider_/vehicle.val camera: chase_dist 9.9 m, chase_dy 2.2 m.
-    let target = t.translation + Vec3::Y * 2.2 * SCALE;
+    let (chase, height) = v.kind.camera();
+    let target = t.translation + Vec3::Y * (height + 1.0) * SCALE;
     let dir = (-fwd).normalize();
-    let mut dist = 9.9 * SCALE;
+    let mut dist = chase * SCALE;
     if let Some(h) = col.raycast(target, dir, dist) { dist = (h.t - 10.0).max(20.0); }
     let want = target + dir * dist;
     cam.translation = cam.translation.lerp(want, 1.0 - (-10.0 * dt).exp());
-    cam.look_at(target + fwd * 6.0 * SCALE, Vec3::Y);
+    cam.look_at(target + fwd * 3.0 * SCALE, Vec3::Y);
 }
 
 #[derive(Component)]
@@ -343,10 +452,32 @@ fn spawn_thermals(mut commands: Commands, assets: Res<AssetServer>, thermals: Re
 
 /// Thermals only matter (and show) while gliding.
 fn show_thermals(vehicles: Query<&Vehicle>, mut columns: Query<&mut Visibility, With<ThermalColumn>>) {
-    let gliding = vehicles.iter().any(|v| v.kind == Kind::Glider);
+    let gliding = vehicles.iter().any(|v| v.kind.gliding());
     for mut vis in &mut columns {
         vis.set_if_neq(if gliding { Visibility::Inherited } else { Visibility::Hidden });
     }
+}
+
+#[derive(Component)]
+struct Rider(Kind);
+
+/// The explorer rides along: prone under the hang glider, seated on the pedal
+/// glider and standing in the rocket belt's harness. Model space here is the
+/// 3DS model's (metres, facing -Z), so the figure is scaled to about 1.3 m.
+fn attach_pilot(ready: On<WorldInstanceReady>, riders: Query<&Rider>, children: Query<&Children>, names: Query<&Name>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<crate::gx::GxMaterial>>, globals: Res<crate::gx::GxGlobals>, mut commands: Commands) {
+    let Ok(rider) = riders.get(ready.entity) else { return };
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let (joint, pose, seated) = match rider.0 {
+        Kind::Glider => ("harness", Transform::from_xyz(0.0, -0.35, 0.6).with_rotation(Quat::from_rotation_x(-FRAC_PI_2) * Quat::from_rotation_y(PI)), false),
+        Kind::PGlider => ("butt", Transform::from_xyz(0.0, -0.4, 0.0).with_rotation(Quat::from_rotation_y(PI)), true),
+        Kind::Rocket | Kind::SuperRocket => ("harness", Transform::from_xyz(0.0, -0.6, -0.15).with_rotation(Quat::from_rotation_y(PI)), false),
+        _ => return,
+    };
+    let Some(at) = children.iter_descendants(ready.entity).find(|&e| names.get(e).is_ok_and(|n| n.as_str() == joint)) else { return };
+    commands.entity(at).with_children(|c| {
+        c.spawn((Name::new("Pilot"), pose.with_scale(Vec3::splat(0.025)), Visibility::default()))
+            .with_children(|c| crate::player::body(c, &mut meshes, &mut materials, &globals, seated));
+    });
 }
 
 fn despawn(mut commands: Commands, q: Query<Entity, With<Vehicle>>) {
@@ -400,6 +531,59 @@ mod tests {
         assert!((t.lift(Vec3::new(0.0, 0.5, 0.0)) - 1.0).abs() < 0.01);
         assert!((t.lift(Vec3::new(0.0, 199.5, 0.0)) - 0.5).abs() < 0.01);
         assert_eq!(t.lift(Vec3::new(60.0, 100.0, 0.0)), 0.0);
+    }
+
+    fn rocket() -> (Rocket, Body) {
+        let mut b = Body::new(454.5, Vec3::splat(422.799));
+        b.pos = Vec3::new(0.0, 100.0, 0.0);
+        (Rocket { power: 1.0 }, b)
+    }
+
+    fn burn(r: &Rocket, b: &mut Body, input: RocketInput, seconds: f32) {
+        for _ in 0..(seconds / DT) as usize { r.step(b, input); b.integrate(); }
+    }
+
+    #[test]
+    fn rocket_jets_climb_and_leaning_moves_forward() {
+        let (r, mut b) = rocket();
+        burn(&r, &mut b, RocketInput { thrust: true, ..default() }, 2.0);
+        assert!(b.pos.y > 110.0, "climbed to {}", b.pos.y);
+        let (r, mut b) = rocket();
+        burn(&r, &mut b, RocketInput { thrust: true, tilt: 0.5, ..default() }, 2.0);
+        assert!(b.pos.z > 5.0, "moved forward {}", b.pos.z);
+        assert!((b.rot * Vec3::Y).y > 0.95, "pilot stays upright");
+    }
+
+    #[test]
+    fn rocket_air_brake_holds_position() {
+        let (r, mut b) = rocket();
+        b.vel = Vec3::new(10.0, -10.0, 0.0);
+        burn(&r, &mut b, RocketInput { hover: true, ..default() }, 2.0);
+        assert!(b.vel.length() < 0.5, "still moving at {}", b.vel);
+    }
+
+    #[test]
+    fn light_throttle_slows_a_fall() {
+        let (r, mut b) = rocket();
+        burn(&r, &mut b, RocketInput { light: true, ..default() }, 3.0);
+        let (r2, mut free) = rocket();
+        burn(&r2, &mut free, RocketInput::default(), 3.0);
+        assert!(b.pos.y > free.pos.y + 10.0, "light {} vs free {}", b.pos.y, free.pos.y);
+    }
+
+    #[test]
+    fn pedalling_pushes_forward_and_tires_the_rider() {
+        let (mut g, mut b) = glider();
+        let mut p = Pedal::default();
+        let mut slow = b.clone();
+        let (mut g2, mut p2) = (g.clone(), Pedal::default());
+        for i in 0..(10.0 / DT) as usize {
+            let tap = i % 50 == 0;
+            p.step(&mut b, tap); g.step(&mut b, Input::default(), 0.0); b.integrate();
+            p2.step(&mut slow, false); g2.step(&mut slow, Input::default(), 0.0); slow.integrate();
+        }
+        assert!(b.pos.y > slow.pos.y + 5.0 || b.vel.length() > slow.vel.length() + 2.0, "pedalled {} vs coasting {}", b.pos, slow.pos);
+        assert!(p.stamina < 0.8, "stamina {}", p.stamina);
     }
 
     #[test]
