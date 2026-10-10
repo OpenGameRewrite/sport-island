@@ -85,7 +85,7 @@ fn traffic_check(time: Res<Time<Real>>, bones: Query<(&Name, &GlobalTransform)>,
 fn smoke(
     time: Res<Time<Real>>, state: Res<State<crate::AppState>>, mode: Res<State<crate::Mode>>,
     mut c: ResMut<crate::input::Controls>, mut phase: Local<u8>, mut paused_at: Local<Option<Vec3>>, mut boarded_at: Local<f32>,
-    plane: Query<&Transform, With<crate::plane::Plane>>, menu: Res<crate::menu::Menu>,
+    plane: Query<&Transform, With<crate::plane::Flying>>, menu: Res<crate::menu::Menu>,
     markers: Query<&crate::ipoint::Marker>,
     names: Query<&Name>,
 ) {
@@ -175,7 +175,7 @@ pub fn log_state(
     mode: Res<State<crate::Mode>>,
     state: Res<State<crate::AppState>>,
     player: Query<&Transform, With<crate::player::Player>>,
-    planes: Query<&Transform, With<crate::plane::Plane>>,
+    planes: Query<&Transform, With<crate::plane::Flying>>,
     cam: Query<&Transform, With<crate::world::MainCamera>>,
     mut last: Local<f32>,
 ) {

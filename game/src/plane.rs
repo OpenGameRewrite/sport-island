@@ -36,6 +36,11 @@ const ANGULAR_DAMPING: f32 = 0.99;
 // The original plane's body setup uses unit mass and diagonal inertia 10/10/10.
 const INERTIA: Vec3 = Vec3::splat(10.0);
 
+/// Whatever the player is flying (the Wii plane or an add-on vehicle);
+/// other modules use it to find the aircraft.
+#[derive(Component)]
+pub struct Flying;
+
 #[derive(Component)]
 pub struct Plane {
     /// Units per frame.
@@ -333,6 +338,7 @@ pub fn board(
             commands
                 .spawn((
                     plane,
+                    Flying,
                     pose,
                     Visibility::default(),
                 ))

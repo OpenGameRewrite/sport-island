@@ -195,7 +195,8 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
         Row::Start if c.confirm => { save.lang = Some(texts.code.clone()); close(&mut m, &mut vtime, &mut c); next.set(AppState::Play); }
         Row::Resume if c.confirm => close(&mut m, &mut vtime, &mut c),
         Row::Time => { tod.0 = cycle(tod.0, 3); save.time = tod.0; }
-        Row::Plane => save.plane = cycle(save.plane, 2),
+        Row::Plane => save.plane = cycle(save.plane, 2 + if crate::pwr::available() { crate::vehicles::KINDS.len() as u8 } else { 0 }),
+        Row::Livery if crate::vehicles::selected(&save).is_some() => save.favorite = cycle(save.favorite, 12),
         Row::Livery => save.livery = cycle(save.livery, if save.plane == 0 {3} else {2}),
         Row::Controls if c.confirm => { m.page = Page::Controls; m.sel = 0; }
         Row::Settings if c.confirm => { m.page = Page::Settings; m.sel = 0; }
@@ -292,12 +293,14 @@ fn render(
         Page::Main => {
             header.0.set_if_neq(Text::new("Sport Island")); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
             let lang = langs.0.iter().find(|l| l.code == texts.code).map_or("", |l| l.name.as_str());
-            let livery = if save.plane == 0 { [Ui::Red, Ui::White, Ui::Yellow][save.livery.min(2) as usize] } else { [Ui::Orange, Ui::Blue][save.livery.min(1) as usize] };
+            let vehicle = crate::vehicles::selected(&save);
+            let livery = if vehicle.is_some() { crate::lang::FAVORITES[save.favorite.min(11) as usize] } else if save.plane == 0 { [Ui::Red, Ui::White, Ui::Yellow][save.livery.min(2) as usize] } else { [Ui::Orange, Ui::Blue][save.livery.min(1) as usize] };
+            let plane_name = match vehicle { Some(k) => texts.pwr(k.name_key()).unwrap_or_else(|| format!("{k:?}")), None => texts.ui(if save.plane == 0 {Ui::Plane1} else {Ui::Plane2}).into() };
             (if title {TITLE} else {PAUSE}).iter().map(|row| match row {
                 Row::Start => (texts.ui(Ui::Start).into(), String::new()),
                 Row::Resume => (texts.ui(Ui::Resume).into(), String::new()),
                 Row::Time => (texts.ui(Ui::TimeOfDay).into(), choice(texts.ui([Ui::Day, Ui::Dusk, Ui::Night][tod.0 as usize]))),
-                Row::Plane => (if title {texts.ui(Ui::Plane).into()} else {format!("{} ({})", texts.ui(Ui::Plane), texts.ui(Ui::NextBoarding))}, choice(texts.ui(if save.plane == 0 {Ui::Plane1} else {Ui::Plane2}))),
+                Row::Plane => (if title {texts.ui(Ui::Plane).into()} else {format!("{} ({})", texts.ui(Ui::Plane), texts.ui(Ui::NextBoarding))}, choice(&plane_name)),
                 Row::Livery => (texts.ui(Ui::Livery).into(), choice(texts.ui(livery))),
                 Row::Controls => (texts.ui(Ui::Controls).into(), "›".into()),
                 Row::Settings => (texts.ui(Ui::Settings).into(), "›".into()),

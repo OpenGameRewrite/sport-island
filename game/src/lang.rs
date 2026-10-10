@@ -27,6 +27,9 @@ pub struct Texts {
     pwr: HashMap<String, String>,
 }
 
+/// Mii favourite colours in the add-on's `colortex.val` order.
+pub const FAVORITES: [Ui; 12] = [Ui::Red, Ui::Orange, Ui::Yellow, Ui::YellowGreen, Ui::Green, Ui::Blue, Ui::SkyBlue, Ui::Pink, Ui::Purple, Ui::Brown, Ui::White, Ui::Black];
+
 impl Texts {
     pub fn load(code: &str) -> Self {
         let raw: HashMap<String, String> = crate::read_json(&format!("text/{code}.json"));
@@ -112,6 +115,7 @@ pub enum Ui {
     Red, White, Yellow, Orange, Blue, Space, LeftShift, LeftCtrl, MouseLeft, MouseRight, MouseMiddle,
     DLeft, DRight, DUp, DDown,
     South, East, West, North, Escape, Select, RightStick, Mouse, Fullscreen, GroundAssist,
+    YellowGreen, Green, SkyBlue, Pink, Purple, Brown, Black,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -171,6 +175,13 @@ const UI: &[[&str; 5]] = &[
     ["Mouse", "Souris", "Maus", "Ratón", "Mouse"],
     ["Fullscreen", "Plein écran", "Vollbild", "Pantalla completa", "Schermo intero"],
     ["Ground assist", "Aide près du sol", "Bodenhilfe", "Ayuda cerca del suelo", "Aiuto vicino al suolo"],
+    ["Light green", "Vert clair", "Hellgrün", "Verde claro", "Verde chiaro"],
+    ["Green", "Vert", "Grün", "Verde", "Verde"],
+    ["Light blue", "Bleu clair", "Hellblau", "Azul claro", "Azzurro"],
+    ["Pink", "Rose", "Rosa", "Rosa", "Rosa"],
+    ["Purple", "Violet", "Lila", "Morado", "Viola"],
+    ["Brown", "Marron", "Braun", "Marrón", "Marrone"],
+    ["Black", "Noir", "Schwarz", "Negro", "Nero"],
 ];
 
 const ACTIONS: &[[&str; 5]] = &[

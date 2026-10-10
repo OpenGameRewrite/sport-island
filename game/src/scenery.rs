@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::world_serialization::WorldInstanceReady;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::{ipoint::{IPoints, Marker}, plane::{Plane, Shot}, sound::{Sound, Sounds}, world::TimeOfDay};
+use crate::{ipoint::{IPoints, Marker}, plane::{Flying as Plane, Shot}, sound::{Sound, Sounds}, world::TimeOfDay};
 
 #[derive(Deserialize, Serialize, Clone, PartialEq)]
 pub struct Placement {

@@ -4,7 +4,7 @@
 
 use crate::input::Controls;
 use crate::lang::Texts;
-use crate::plane::Plane;
+use crate::plane::Flying as Plane;
 use crate::player::Player;
 use crate::save::Save;
 use crate::world::{MainCamera, TimeOfDay};

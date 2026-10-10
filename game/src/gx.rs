@@ -107,7 +107,7 @@ pub fn shaded(color: Color, globals: Handle<ShaderBuffer>) -> GxMaterial {
 
 /// A texture modulated by the lit, fogged material colour: what non-Wii
 /// models (the Pilotwings Resort add-on) need to sit in the island's lighting.
-pub fn textured(texture: Option<Handle<Image>>, cutout: bool, globals: Handle<ShaderBuffer>) -> GxMaterial {
+pub fn textured(texture: Option<Handle<Image>>, alpha: AlphaMode, globals: Handle<ShaderBuffer>) -> GxMaterial {
     let mut m = shaded(Color::WHITE, globals);
     if texture.is_some() {
         // TEXC × RASC and TEXA × RASA, texmap 0 from UV0, colour channel 0.
@@ -115,12 +115,17 @@ pub fn textured(texture: Option<Handle<Image>>, cutout: bool, globals: Handle<Sh
         m.tev.texgen[0] = UVec4::new(5, 0, 0, 0);
         [m.tev.texmtx[0], m.tev.texmtx[1]] = tex_mtx([1.0, 1.0, 0.0, 0.0, 0.0]);
     }
-    if cutout {
-        // Alpha GREATER 127, second comparison ALWAYS.
-        m.tev.alpha_test = UVec4::new(4 | 7 << 4, 127, 0, 0);
-        m.alpha_mode = AlphaMode::Mask(0.0);
-    }
     m.tev.chan.w = 1;
+    match alpha {
+        AlphaMode::Mask(_) => {
+            // Alpha GREATER 127, second comparison ALWAYS.
+            m.tev.alpha_test = UVec4::new(4 | 7 << 4, 127, 0, 0);
+            m.alpha_mode = AlphaMode::Mask(0.0);
+        }
+        // Additive with source alpha, as GX blends it (see `decode`).
+        AlphaMode::Add => { m.tev.chan.w |= 4 | 2; m.alpha_mode = AlphaMode::Add; }
+        other => m.alpha_mode = other,
+    }
     m.t0 = texture;
     m
 }

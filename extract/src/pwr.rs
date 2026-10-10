@@ -502,7 +502,7 @@ fn paint(pwr: &Pwr, containers: &[&str], layers: &Value, exceptions: &[Value], f
 }
 
 /// Everything needed to resolve names across containers.
-struct Pwr { payloads: HashMap<String, Vec<u8>>, tocs: HashMap<String, Vec<Res>>, names: HashMap<u32, String>, livery: Option<(String, Image)> }
+struct Pwr { payloads: HashMap<String, Vec<u8>>, tocs: HashMap<String, Vec<Res>>, names: HashMap<u32, String>, livery: Option<(String, Image, String)> }
 
 impl Pwr {
     fn res(&self, container: &str, name: &str) -> Option<(&Res, &[u8])> {
@@ -511,7 +511,7 @@ impl Pwr {
     }
     /// A texture by name, searched in the given containers in order.
     fn texture(&self, containers: &[&str], name: &str) -> Option<Image> {
-        if let Some((orig, img)) = self.livery.as_ref().filter(|(o, _)| o == name) {
+        if let Some((orig, img, _)) = self.livery.as_ref().filter(|(o, _, _)| o == name) {
             return Some(Image { w: img.w, h: img.h, rgba: img.rgba.clone() }).filter(|_| !orig.is_empty());
         }
         containers.iter().find_map(|c| self.res(c, name).filter(|(r, _)| r.kind == "TEX")).and_then(|(_, d)| texture(d).ok())
@@ -520,12 +520,15 @@ impl Pwr {
     /// textured layer of a `.mat` key tree.
     fn base_texture(&self, containers: &[&str], material: &str) -> Option<(String, Image)> {
         if material.ends_with(".mat") {
-            let (_, d) = containers.iter().find_map(|c| self.res(c, material))?;
-            let tree = valt(d, &self.names).ok()?;
+            let tree = self.material(containers, material)?;
             let tex = tree["layer"].as_array()?.iter().find_map(|l| l["texture"].as_str())?.to_ascii_lowercase();
             return self.texture(containers, &tex).map(|i| (tex, i));
         }
         self.texture(containers, material).map(|i| (material.to_string(), i))
+    }
+    fn material(&self, containers: &[&str], name: &str) -> Option<Value> {
+        let (_, d) = containers.iter().find_map(|c| self.res(c, name))?;
+        valt(d, &self.names).ok()
     }
 }
 
@@ -540,11 +543,28 @@ fn to_glb(pwr: &Pwr, containers: &[&str], meshes: &[Mesh], joints: &[(String, [f
             None => {
                 let mut mj = json!({ "name": m.material, "pbrMetallicRoughness": { "metallicFactor": 0.0, "roughnessFactor": 0.8 }, "doubleSided": false });
                 if let Some((tex, img)) = pwr.base_texture(containers, &m.material) {
+                    // The game swaps this texture for the chosen favourite colour.
+                    if let Some((_, _, vehicle)) = pwr.livery.as_ref().filter(|(o, _, _)| *o == tex) {
+                        mj["extras"] = json!({ "livery": vehicle });
+                    }
                     if let Ok(png) = img.png() {
                         let image = g.image_png(&tex, &png);
                         g.textures.push(json!({ "sampler": 0, "source": image }));
                         mj["pbrMetallicRoughness"]["baseColorTexture"] = json!({ "index": g.textures.len() - 1 });
                         if img.has_alpha() { mj["alphaMode"] = json!("MASK"); }
+                        // Blending and texture scrolling from the `.mat` key tree.
+                        if let Some(tree) = m.material.ends_with(".mat").then(|| pwr.material(containers, &m.material)).flatten() {
+                            let global = &tree["global"][0];
+                            match (global["src_blend"].as_str(), global["dst_blend"].as_str()) {
+                                (_, Some("one")) => { mj["alphaMode"] = json!("BLEND"); mj["extras"]["blend"] = json!("add"); }
+                                (Some("srca"), Some("inv_srca")) => mj["alphaMode"] = json!("BLEND"),
+                                _ => {}
+                            }
+                            if let Some(layer) = tree["layer"].as_array().and_then(|l| l.iter().find(|l| l["texture"].is_string())) {
+                                let (u, v) = (layer["tex_anim_u"].as_f64().unwrap_or(0.0), layer["tex_anim_v"].as_f64().unwrap_or(0.0));
+                                if u != 0.0 || v != 0.0 { mj["extras"]["scroll"] = json!([u, v]); }
+                            }
+                        }
                     }
                 }
                 g.materials.push(mj);
@@ -637,7 +657,7 @@ pub fn extract(path: &Path, out: &Path) -> Result<()> {
                 for (i, fav) in favs.iter().enumerate() {
                     let Some(img) = paint(&pwr, &containers, layers, &exceptions, fav) else { continue };
                     fs::write(out.join(format!("textures/{v}_{}.png", fav.name)), img.png()?)?;
-                    if i == 0 { pwr.livery = Some((orig.clone(), img)); }
+                    if i == 0 { pwr.livery = Some((orig.clone(), img, v.to_string())); }
                 }
                 liveries.insert(v.to_string(), json!(orig));
             }

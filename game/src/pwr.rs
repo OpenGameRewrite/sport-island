@@ -61,8 +61,21 @@ pub fn add_ipoints(defs: &mut Vec<IPointDef>) {
 
 pub fn plugin(app: &mut App) {
     if !available() { return; }
-    app.add_systems(OnEnter(AppState::Play), spawn)
-        .add_systems(Update, (convert_materials, follow_path, spin));
+    app.init_resource::<Scrolling>()
+        .add_systems(OnEnter(AppState::Play), spawn)
+        .add_systems(Update, (convert_materials, follow_path, spin, scroll));
+}
+
+/// Materials whose texture drifts (`tex_anim_u/v`, texture widths per second).
+#[derive(Resource, Default)]
+struct Scrolling(HashMap<AssetId<crate::gx::GxMaterial>, Vec2>);
+
+fn scroll(time: Res<Time>, scrolling: Res<Scrolling>, mut gx: ResMut<Assets<crate::gx::GxMaterial>>) {
+    let t = time.elapsed_secs();
+    for (&id, rate) in &scrolling.0 {
+        let offset = (*rate * t).fract_gl();
+        if let Some(mut m) = gx.get_mut(id) { m.set_srt(0, [1.0, 1.0, 0.0, offset.x, offset.y]); }
+    }
 }
 
 #[derive(Component)]
@@ -149,19 +162,44 @@ fn spin(time: Res<Time>, mut q: Query<(&Spin, &mut Transform)>) {
     for (s, mut t) in &mut q { t.rotate_local_z(s.0 * time.delta_secs()); }
 }
 
+/// The 12 Mii favourite colours, in `colortex.val` order, that liveries are painted in.
+pub fn favorites() -> Vec<String> {
+    data("liveries.json")["favorites"].as_array().into_iter().flatten().filter_map(|f| f["name"].as_str().map(str::to_owned)).collect()
+}
+
 /// The add-on's models carry plain glTF materials; give them the island's
-/// GX lighting and fog. Wii models always carry `extras.gx` and are skipped.
+/// GX lighting and fog. Wii materials carry `extras.gx` and are skipped.
+/// Livery materials (`extras.livery`) show the chosen favourite colour.
 fn convert_materials(
     mut commands: Commands,
-    q: Query<(Entity, &MeshMaterial3d<StandardMaterial>), Without<GltfMaterialExtras>>,
+    q: Query<(Entity, &MeshMaterial3d<StandardMaterial>, Option<&GltfMaterialExtras>)>,
     standard: Res<Assets<StandardMaterial>>,
     globals: Res<crate::gx::GxGlobals>,
+    save: Res<crate::save::Save>,
+    assets: Res<AssetServer>,
     mut gx: ResMut<Assets<crate::gx::GxMaterial>>,
-    mut cache: Local<HashMap<AssetId<StandardMaterial>, Handle<crate::gx::GxMaterial>>>,
+    mut favorites: Local<Option<Vec<String>>>,
+    mut scrolling: ResMut<Scrolling>,
+    mut cache: Local<HashMap<(AssetId<StandardMaterial>, usize), Handle<crate::gx::GxMaterial>>>,
 ) {
-    for (e, handle) in &q {
+    for (e, handle, extras) in &q {
+        let extras: Value = extras.and_then(|x| serde_json::from_str(&x.value).ok()).unwrap_or(Value::Null);
+        if !extras["gx"].is_null() { continue; }
         let Some(m) = standard.get(&handle.0) else { continue };
-        let h = cache.entry(handle.0.id()).or_insert_with(|| gx.add(crate::gx::textured(m.base_color_texture.clone(), matches!(m.alpha_mode, AlphaMode::Mask(_)), globals.0.clone()))).clone();
+        let livery = extras["livery"].as_str();
+        let favorite = if livery.is_some() { save.favorite as usize } else { usize::MAX };
+        let h = cache.entry((handle.0.id(), favorite)).or_insert_with(|| {
+            let names = favorites.get_or_insert_with(self::favorites);
+            let texture = match (livery, names.get(favorite)) {
+                (Some(v), Some(name)) => Some(assets.load(format!("pwr/textures/{v}_{name}.png"))),
+                _ => m.base_color_texture.clone(),
+            };
+            let alpha = if extras["blend"] == "add" { AlphaMode::Add } else { m.alpha_mode };
+            gx.add(crate::gx::textured(texture, alpha, globals.0.clone()))
+        }).clone();
+        if let Some([u, v]) = extras["scroll"].as_array().map(|a| [0, 1].map(|i| a.get(i).and_then(Value::as_f64).unwrap_or(0.0) as f32)) {
+            scrolling.0.insert(h.id(), Vec2::new(u, v));
+        }
         commands.entity(e).remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(h));
     }
 }

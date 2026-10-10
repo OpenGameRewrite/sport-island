@@ -14,7 +14,8 @@ pub struct Save {
     pub collected: BTreeSet<u16>,
     /// 0 day, 1 dusk, 2 night.
     pub time: u8,
-    /// 0 = standard plane, 1 = second plane model.
+    /// 0 = standard plane, 1 = second plane model, 2.. = Pilotwings Resort
+    /// vehicles (`vehicles::KINDS`) when that add-on is installed.
     pub plane: u8,
     pub invert_pitch: bool,
     /// Only overrides; absent entries keep the published defaults.
@@ -26,12 +27,14 @@ pub struct Save {
     pub fullscreen: bool,
     /// Strength of the original lift away from nearby ground (1 = original).
     pub ground_assist: f32,
+    /// Mii favourite colour (`colortex.val` order) for add-on vehicle liveries.
+    pub favorite: u8,
 }
 
 impl Default for Save {
     fn default() -> Self {
         Self { lang: None, collected: BTreeSet::new(), time: 0, plane: 0, invert_pitch: false,
-            bindings: Default::default(), livery: 0, flight_sensitivity: 1.0, look_sensitivity: 1.0, speedometer: false, fullscreen: false, ground_assist: 1.0 }
+            bindings: Default::default(), livery: 0, flight_sensitivity: 1.0, look_sensitivity: 1.0, speedometer: false, fullscreen: false, ground_assist: 1.0, favorite: 0 }
     }
 }
 
@@ -64,7 +67,8 @@ impl Save {
 pub fn plugin(app: &mut App) {
     let mut save: Save = std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     save.time = save.time.min(2);
-    save.plane = save.plane.min(1);
+    save.plane = save.plane.min(1 + if crate::pwr::available() { crate::vehicles::KINDS.len() as u8 } else { 0 });
+    save.favorite = save.favorite.min(11);
     save.livery = save.livery.min(2);
     for v in [&mut save.flight_sensitivity, &mut save.look_sensitivity] {
         *v = if v.is_finite() { v.clamp(0.25, 1.5) } else { 1.0 };
