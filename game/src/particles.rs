@@ -279,6 +279,8 @@ pub struct Effect {
     pub root: Affine3A,
     emitters: Vec<Emitter>,
     rng: Rng,
+    /// Replaces colour layer 0's primary and secondary RGB, as the game does for player-coloured effects.
+    tint: Option<[[u8; 3]; 2]>,
 }
 
 impl Effect {
@@ -315,11 +317,15 @@ impl Emitter {
 }
 
 pub fn spawn(commands: &mut Commands, lib: &ParticleLib, name: &str, root: Affine3A) -> Option<Entity> {
+    spawn_tinted(commands, lib, name, root, None)
+}
+
+pub fn spawn_tinted(commands: &mut Commands, lib: &ParticleLib, name: &str, root: Affine3A, tint: Option<[[u8; 3]; 2]>) -> Option<Entity> {
     let Some(res) = lib.0.get(name) else { warn!("Missing particle emitter {name}"); return None };
     let mut rng = Rng(name.bytes().fold(0x1234_5678, |h, b| h.rotate_left(5) ^ b as u32));
     let local = local_mtx(res);
     let emitter = Emitter::new(res.clone(), name, None, local, root * local, &mut rng);
-    Some(commands.spawn((Name::new(format!("Effect {name}")), Effect { root, emitters: vec![emitter], rng }, Transform::default(), Visibility::default())).id())
+    Some(commands.spawn((Name::new(format!("Effect {name}")), Effect { root, emitters: vec![emitter], rng, tint }, Transform::default(), Visibility::default())).id())
 }
 
 fn local_mtx(res: &EmitterRes) -> Affine3A {
@@ -891,6 +897,7 @@ fn draw(
     let up = (Vec3::Y - fwd * fwd.dot(Vec3::Y)).try_normalize().unwrap_or(cam.up().as_vec3());
     let right = fwd.cross(up).normalize();
     for (owner, mut fx) in &mut effects {
+        let tint = fx.tint;
         for e in &mut fx.emitters {
             let emitter_pos: Vec3 = e.global.translation.into();
             let emitter_y = e.global.transform_vector3(Vec3::Y).normalize_or_zero();
@@ -937,7 +944,8 @@ fn draw(
                     }
                     let fl = flick(&res.draw, p);
                     for (layer, list) in cols.iter_mut().enumerate() {
-                        let c = &p.p.colors[layer * 4..layer * 4 + 4];
+                        let mut c: [u8; 4] = p.p.colors[layer * 4..layer * 4 + 4].try_into().unwrap();
+                        if let Some(t) = tint.filter(|_| layer < 2) { c[..3].copy_from_slice(&t[layer]); }
                         let a = fl.map_or(c[3] as i32, |f| (c[3] as i32 * f + 128) >> 8);
                         let v = [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, a as f32 / 255.0];
                         list.extend([v; 4]);

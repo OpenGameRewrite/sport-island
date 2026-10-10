@@ -23,6 +23,19 @@ pub fn plugin(app: &mut App) {
     if let Some(at) = std::env::var("SI_FLARE").ok().and_then(|s| s.parse::<f32>().ok()) {
         app.add_systems(PreUpdate, (move |time: Res<Time>, mut c: ResMut<crate::input::Controls>, mut done: Local<bool>| if !*done && time.elapsed_secs() > at { c.flare = true; *done = true; }).after(crate::input::read));
     }
+    // SI_SHOOT=seconds holds the gun from that time (with SI_FLY).
+    if let Some(at) = std::env::var("SI_SHOOT").ok().and_then(|s| s.parse::<f32>().ok()) {
+        app.add_systems(PreUpdate, (move |time: Res<Time>, mut c: ResMut<crate::input::Controls>| if time.elapsed_secs() > at { c.shoot = true; }).after(crate::input::read));
+    }
+    // SI_EFFECT=name spawns that particle effect 200 units ahead of the camera every second.
+    if let Ok(name) = std::env::var("SI_EFFECT") {
+        app.add_systems(FixedUpdate, move |mut commands: Commands, time: Res<Time>, lib: Res<crate::particles::ParticleLib>, cam: Single<&GlobalTransform, With<crate::world::MainCamera>>, mut last: Local<f32>| {
+            if time.elapsed_secs() - *last < 1.0 { return; }
+            *last = time.elapsed_secs();
+            let at = bevy::math::Affine3A::from_translation((cam.translation() + cam.forward() * 200.0).into());
+            crate::particles::spawn(&mut commands, &lib, &name, at);
+        });
+    }
     if std::env::var("SI_MODEL").is_ok() {
         app.add_systems(Startup, inspect_model).add_systems(Update, |mut cams: Query<&mut Camera, With<crate::world::MainCamera>>| for mut c in &mut cams { c.is_active = false; });
     }

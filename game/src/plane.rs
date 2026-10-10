@@ -603,12 +603,28 @@ fn flares(
 fn projectiles(
     mut commands: Commands,
     col: Res<Collision>,
+    lib: Res<crate::particles::ParticleLib>,
     mut shots: MessageWriter<Shot>,
+    mut sounds: MessageWriter<crate::sound::Sound>,
     mut bullets: Query<(Entity, &mut Bullet, &mut Transform)>,
 ) {
     for (e, mut b, mut t) in &mut bullets {
         let len = b.vel.length();
-        if b.life == 0 || col.raycast(t.translation, b.vel / len, len).is_some() {
+        let hit = col.raycast(t.translation, b.vel / len, len);
+        if let Some(h) = &hit {
+            // Original impacts: a splash on water, else sparks plus a puff in the player's shot colours.
+            let at = Affine3A::from_rotation_translation(Quat::from_rotation_arc(Vec3::Y, h.n.normalize_or(Vec3::Y)), t.translation + b.vel / len * h.t);
+            let pos = Some(at.translation.into());
+            if h.flags & 0x1f == 6 {
+                crate::particles::spawn(&mut commands, &lib, "WS2_pln_bullet_water", at);
+                sounds.write(crate::sound::Sound::effect("SE_PLN_BULLET_HIT_WATER", pos));
+            } else {
+                crate::particles::spawn(&mut commands, &lib, "WS2_pln_bullet_hit", at);
+                crate::particles::spawn_tinted(&mut commands, &lib, "WS2_pln_bullet_ptcl", at, Some([[0x00, 0x46, 0xff], [0xc8, 0xff, 0xff]]));
+                sounds.write(crate::sound::Sound::effect("SE_PLN_BULLET_HIT", pos));
+            }
+        }
+        if b.life == 0 || hit.is_some() {
             commands.entity(e).despawn();
             continue;
         }
