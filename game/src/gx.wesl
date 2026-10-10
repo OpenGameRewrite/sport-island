@@ -232,9 +232,16 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let f = clamp((d - fog.x) / (fog.y - fog.x), 0.0, 1.0);
         out = vec4<f32>(mix(out.rgb, fog_color.rgb, f), out.a);
     }
-    // GX colours are gamma-space; the render target is linear.
+    // GX colours are gamma-space; the render target is linear. GX also adds in
+    // gamma space, which the linear target would make far too faint over a
+    // bright sky: add what gamma-space addition would over the fog/sky colour.
+    if (tev.chan.w & 4u) != 0u {
+        var g = out.rgb;
+        if (tev.chan.w & 2u) != 0u { g *= out.a; }
+        let d = globals[3].rgb;
+        return vec4<f32>(max(pow(g + d, vec3<f32>(2.2)) - pow(d, vec3<f32>(2.2)), vec3<f32>(0.0)), 0.0);
+    }
     out = vec4<f32>(pow(out.rgb, vec3<f32>(2.2)), out.a);
     if (tev.chan.w & 2u) != 0u { out = vec4<f32>(out.rgb * out.a, out.a); }
-    if (tev.chan.w & 4u) != 0u { out.a = 0.0; }
     return out;
 }

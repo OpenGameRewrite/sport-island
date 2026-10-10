@@ -55,8 +55,10 @@ mouse. Select **Resume** to continue.
 
 Original scenery, messages and sounds come from your disc. Flight behavior is
 being reconstructed from the game, but this is still an exploration demo:
-wave/contact stabilization, some traffic steering, particles and parts of the
-sequence synthesizer remain approximate.
+wave/contact stabilization, some traffic steering, rarely used particle
+features (stripes, indirect textures, some force fields) and parts of the
+sequence synthesizer remain approximate. After updating, run the extractor
+again: newer builds read data the old extraction did not write.
 
 ## About
 

@@ -9,6 +9,7 @@ mod input;
 mod ipoint;
 mod lang;
 mod menu;
+mod particles;
 mod plane;
 mod player;
 mod save;
@@ -65,7 +66,7 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .init_state::<AppState>()
         .init_state::<Mode>()
-        .add_plugins((save::plugin, lang::plugin, input::plugin, collide::plugin, gx::plugin, world::plugin))
+        .add_plugins((save::plugin, lang::plugin, input::plugin, collide::plugin, gx::plugin, particles::plugin, world::plugin))
         .add_plugins((player::plugin, plane::plugin, ipoint::plugin, menu::plugin, scenery::plugin, sound::plugin, debug::plugin))
         .run();
 }

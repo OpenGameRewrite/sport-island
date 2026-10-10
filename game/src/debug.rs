@@ -19,6 +19,10 @@ pub fn plugin(app: &mut App) {
     if std::env::var("SI_PLAY").is_ok() || std::env::var("SI_FLY").is_ok() {
         app.add_systems(Update, skip_title.before(crate::plane::board));
     }
+    // SI_FLARE=seconds fires one signal flare at that time (with SI_FLY).
+    if let Some(at) = std::env::var("SI_FLARE").ok().and_then(|s| s.parse::<f32>().ok()) {
+        app.add_systems(PreUpdate, (move |time: Res<Time>, mut c: ResMut<crate::input::Controls>, mut done: Local<bool>| if !*done && time.elapsed_secs() > at { c.flare = true; *done = true; }).after(crate::input::read));
+    }
     if std::env::var("SI_MODEL").is_ok() {
         app.add_systems(Startup, inspect_model).add_systems(Update, |mut cams: Query<&mut Camera, With<crate::world::MainCamera>>| for mut c in &mut cams { c.is_active = false; });
     }

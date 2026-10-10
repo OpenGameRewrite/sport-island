@@ -13,6 +13,7 @@ use crate::player::{CamRig, Player};
 use crate::save::Save;
 use crate::world::MainCamera;
 use crate::Mode;
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use bevy::world_serialization::WorldInstanceReady;
 
@@ -47,7 +48,6 @@ pub struct Plane {
     pub throttle: f32,
     bank: f32,
     gun_cooldown: u32,
-    gun_side: bool,
     previous: Transform,
     boost_left: u8,
     boost_held: bool,
@@ -71,7 +71,7 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, gun_side: false, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_forward: pose.rotation * Vec3::Z, turn_recovery: 1.0 }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_forward: pose.rotation * Vec3::Z, turn_recovery: 1.0 }
     }
     /// One original-rate physics tick, independent of rendering and collision.
     #[cfg(test)]
@@ -240,17 +240,34 @@ struct Bullet {
     age: u32,
 }
 
-#[derive(Component)]
+/// The player's signal flare, after the original state machine: a short
+/// prepare delay, a rise along the plane's up axis that follows the plane, then
+/// the burst, which hangs where it popped.
+#[derive(Component, Default)]
 struct Flare {
-    vel: Vec3,
-    life: u32,
+    state: FlareState,
+    frame: u32,
+    /// Rise steps; the flare sits `2 * rise` units above the launch point.
+    rise: u32,
+    /// Launch frame at the start of the rise; its up axis is the rise direction.
+    launch: Affine3A,
+    pos: Vec3,
+    burst: Vec3,
+    /// Effects: start, tail, burst, hanging loop.
+    slots: [Option<Entity>; 4],
 }
+#[derive(Default, PartialEq)]
+enum FlareState { #[default] Prepare, Rise, Burst }
+const FLARE_EFFECTS: [&str; 5] = ["WS2_pln_sign_st", "WS2_pln_sign_tail", "WS2_pln_sign_end", "WS2_pln_sign_loop", "WS2_pln_sign_misfire"];
+/// Player-flare timings from the original: prepare frames, rise steps, burst
+/// effect delay and hang time; the launch point is offset from the plane.
+const FLARE_PREPARE: u32 = 35;
+const FLARE_RISE: u32 = 60;
+const FLARE_BURST_DELAY: u32 = 10;
+const FLARE_HANG: u32 = 90;
+const FLARE_LAUNCH: Vec3 = Vec3::new(-5.0, 8.0, -8.0);
 #[derive(Component)] struct Speedometer;
 #[derive(Component)] struct ProjectileSprite;
-#[derive(Component)] struct FlareCore;
-#[derive(Component)] struct FlareTrail { remaining: f32, lifetime: f32, alpha: f32, vel: Vec3 }
-#[derive(serde::Deserialize)] struct FlareDef { texture: String, color: [u8; 4], size: [f32; 2], life: f32, wrap: [u8; 2] }
-#[derive(Resource)] struct FlareEffects { quad: Handle<Mesh>, parts: std::collections::BTreeMap<String, (FlareDef, Handle<StandardMaterial>)> }
 
 /// Fired when something should pop (bullets, plane body).
 #[derive(Message)]
@@ -265,13 +282,13 @@ pub fn plugin(app: &mut App) {
     let placements: crate::scenery::Placements = crate::read_json("data/island_f0.json");
     let starts = std::array::from_fn(|i| placements.objects.iter().find(|p| p.group == 3 && p.kind == 2 && (p.params[1] >> 16) as usize == i).expect("original water departure missing").transform());
     app.insert_resource(FirstFlight { boarded: false, starts }).add_message::<Shot>()
-        .add_systems(Startup, (speedometer_spawn, load_flare_effects))
-        .add_systems(Update, (speedometer, flare_visuals, tint_bullets))
+        .add_systems(Startup, speedometer_spawn)
+        .add_systems(Update, (speedometer, tint_bullets))
         .add_systems(PostUpdate, projectile_billboards.before(TransformSystems::Propagate))
         .add_systems(Update, paint)
         .add_systems(Update, board.run_if(crate::menu::playing))
         .add_systems(FixedUpdate, (fly, guns).chain().run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
-        .add_systems(FixedUpdate, projectiles.after(guns).run_if(crate::menu::playing))
+        .add_systems(FixedUpdate, (projectiles.after(guns), flares.after(guns)).run_if(crate::menu::playing))
         .add_systems(Update, (visuals, animate, chase_camera, trails).run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
         .add_systems(OnExit(Mode::Fly), despawn_plane);
 }
@@ -447,7 +464,7 @@ fn fly(
     if t.translation.y < water_height { t.translation.y = water_height; p.vel.y = p.vel.y.max(0.0); }
 }
 
-fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer>, effects: Res<FlareEffects>, mut sounds: MessageWriter<crate::sound::Sound>, mut q: Query<(&mut Plane, &Transform)>) {
+fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer>, flares: Query<(), With<Flare>>, mut sounds: MessageWriter<crate::sound::Sound>, mut q: Query<(&mut Plane, &Transform)>) {
     let Ok((mut p, t)) = q.single_mut() else { return };
     p.gun_cooldown = p.gun_cooldown.saturating_sub(1);
     if c.shoot && p.gun_cooldown == 0 {
@@ -467,14 +484,13 @@ fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer
     }
     if c.flare {
         c.flare = false;
-        sounds.write(crate::sound::Sound::effect("SE_PLN_ILLUM_FLAME_PLAYER_LAUNCH", None));
-        let (def, material) = &effects.parts["WS2_pln_sign_st"];
-        commands.spawn((
-            Name::new("Signal flare"),
-            Transform::from_translation(t.translation + Vec3::Y * 10.0), Visibility::default(),
-            PointLight { color: Color::srgba_u8(def.color[0], def.color[1], def.color[2], 255), intensity: 5.0e8, range: 3000.0, ..default() },
-            Flare { vel: p.vel * 0.5 + Vec3::Y * 9.0, life: 360 },
-        )).with_child((Mesh3d(effects.quad.clone()), MeshMaterial3d(material.clone()), Transform::from_scale(Vec3::new(def.size[0]*2.0, def.size[1]*2.0, 1.0)), FlareCore, ProjectileSprite));
+        // One flare at a time; a refused press gets the "not ready" cue.
+        if flares.is_empty() {
+            sounds.write(crate::sound::Sound::effect("SE_PLN_ILLUM_FLAME_PREPARE", None));
+            commands.spawn((Name::new("Signal flare"), Flare::default()));
+        } else {
+            sounds.write(crate::sound::Sound::effect("SE_PLN_ILLUM_FLAME_PREPARE_NG", None));
+        }
     }
 }
 
@@ -500,59 +516,87 @@ fn speedometer(save: Res<Save>, texts: Res<crate::lang::Texts>, planes: Query<&P
     use crate::lang::Ui;
     text.0.set_if_neq(Text::new(format!("{}: {:.0} {}\n{}: {:.0}%\n{}: {:.0}%", texts.ui(Ui::Speed), p.vel.length()*60.0, texts.ui(Ui::Units), texts.ui(Ui::Engine), p.throttle*100.0, texts.ui(if p.boost_sign >= 0.0 {Ui::Boost} else {Ui::Slow}), p.boost_force*100.0)));
 }
-fn load_flare_effects(mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
-    let definitions: std::collections::BTreeMap<String, FlareDef> = crate::read_json("effects/flare.json");
-    let parts = definitions.into_iter().map(|(name, def)| {
-        use bevy::image::{ImageSampler, ImageSamplerDescriptor, ImageAddressMode};
-        let mirror = def.wrap == [2,2];
-        let mode = |v| match v { 1 => ImageAddressMode::Repeat, 2 => ImageAddressMode::MirrorRepeat, _ => ImageAddressMode::ClampToEdge };
-        let sampler = ImageSamplerDescriptor { address_mode_u: mode(def.wrap[0]), address_mode_v: mode(def.wrap[1]), ..ImageSamplerDescriptor::linear() };
-        let texture = assets.load_builder().with_settings(move |s: &mut bevy::image::ImageLoaderSettings| s.sampler = ImageSampler::Descriptor(sampler.clone())).load(format!("effects/{}.png", def.texture));
-        let material = materials.add(StandardMaterial {
-            base_color: Color::srgba_u8(def.color[0], def.color[1], def.color[2], 255),
-            base_color_texture: Some(texture),
-            // REFF glow/ring assets store the quadrant centered at bottom left.
-            uv_transform: if mirror {bevy::math::Affine2::from_scale_angle_translation(Vec2::splat(2.0), 0.0, Vec2::new(-1.0,0.0))} else {bevy::math::Affine2::IDENTITY},
-            unlit: true, alpha_mode: if mirror {AlphaMode::Add} else {AlphaMode::Blend}, cull_mode: None, ..default()
-        });
-        (name, (def, material))
-    }).collect();
-    commands.insert_resource(FlareEffects { quad: meshes.add(Rectangle::new(1.0, 1.0)), parts });
-}
 fn projectile_billboards(cam: Single<&GlobalTransform, With<MainCamera>>, parents: Query<&GlobalTransform>, mut sprites: Query<(Option<&ChildOf>, &mut Transform), With<ProjectileSprite>>) {
     for (parent, mut t) in &mut sprites {
         t.rotation = parent.and_then(|p| parents.get(p.parent()).ok()).map_or(cam.rotation(), |p| p.rotation().inverse()*cam.rotation());
     }
 }
-fn flare_visuals(mut commands: Commands, time: Res<Time>, effects: Res<FlareEffects>, mut materials: ResMut<Assets<StandardMaterial>>, mut flares: Query<(&Flare, &Transform, &Children, &mut PointLight)>, mut cores: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>), (With<FlareCore>, Without<Flare>, Without<FlareTrail>)>, mut smoke: Query<(Entity, &mut FlareTrail, &mut Transform, &MeshMaterial3d<StandardMaterial>), (Without<Flare>, Without<FlareCore>)>, mut next: Local<f32>) {
-    *next -= time.delta_secs();
-    let emit = *next <= 0.0;
-    if emit { *next = 0.08; }
-    for (f, t, children, mut light) in &mut flares {
-        let fade = (f.life as f32 / 60.0).min(1.0);
-        light.intensity = 5.0e8 * fade;
-        let phase = if f.life >= 359 { "WS2_pln_sign_st" } else if f.life > 300 { "WS2_pln_sign_tail" } else if f.life > 16 { "WS2_pln_sign_loop" } else { "WS2_pln_sign_end" };
-        let (def, mat) = &effects.parts[phase];
-        for child in children {
-            if let Ok((mut transform, mut material)) = cores.get_mut(*child) {
-                transform.scale = Vec3::new(def.size[0]*2.0, def.size[1]*2.0, 1.0)*fade;
-                material.0 = mat.clone();
+/// Advances the flare and keeps its effects on the plane, the rising flare and the burst.
+fn flares(
+    mut commands: Commands,
+    lib: Res<crate::particles::ParticleLib>,
+    col: Res<Collision>,
+    mut sounds: MessageWriter<crate::sound::Sound>,
+    planes: Query<&Transform, With<Plane>>,
+    mut flares: Query<(Entity, &mut Flare)>,
+    mut effects: Query<&mut crate::particles::Effect>,
+) {
+    use crate::particles::spawn;
+    let stop = |effects: &mut Query<&mut crate::particles::Effect>, slot: Option<Entity>| {
+        if let Some(mut fx) = slot.and_then(|e| effects.get_mut(e).ok()) { fx.stop(); }
+    };
+    for (entity, mut f) in &mut flares {
+        let Ok(plane) = planes.single() else {
+            for slot in f.slots { stop(&mut effects, slot); }
+            commands.entity(entity).despawn();
+            continue;
+        };
+        let launch = Affine3A::from(plane.compute_affine()) * Affine3A::from_translation(FLARE_LAUNCH);
+        let start: Vec3 = launch.translation.into();
+        let rotation = Quat::from_mat3a(&f.launch.matrix3);
+        match f.state {
+            FlareState::Prepare => if f.frame + 1 >= FLARE_PREPARE {
+                f.state = FlareState::Rise;
+                f.frame = 0;
+                continue;
+            },
+            FlareState::Rise => {
+                let prev = f.pos;
+                if f.frame == 0 {
+                    f.launch = launch;
+                    f.slots[0] = spawn(&mut commands, &lib, FLARE_EFFECTS[0], launch);
+                    f.slots[1] = spawn(&mut commands, &lib, FLARE_EFFECTS[1], launch);
+                    sounds.write(crate::sound::Sound::effect("SE_PLN_ILLUM_FLAME_PLAYER_LAUNCH", Some(start)));
+                } else {
+                    f.rise += 1;
+                }
+                f.pos = start + Vec3::from(f.launch.matrix3.y_axis) * (2 * f.rise) as f32;
+                let step = f.pos - prev;
+                if f.frame > 0 && let Some(hit) = col.raycast(prev, step.normalize_or_zero(), step.length()) {
+                    // Struck terrain on the way up: fizzle there.
+                    stop(&mut effects, f.slots[1]);
+                    let at = prev + step.normalize_or_zero() * hit.t;
+                    spawn(&mut commands, &lib, FLARE_EFFECTS[4], Affine3A::from_rotation_translation(Quat::from_mat3a(&f.launch.matrix3), at));
+                    commands.entity(entity).despawn();
+                    continue;
+                }
+                if f.rise >= FLARE_RISE {
+                    sounds.write(crate::sound::Sound::effect("SE_PLN_ILLUM_FLAME_PLAYER_EXPLODE", Some(f.pos)));
+                    f.burst = f.pos;
+                    f.state = FlareState::Burst;
+                    f.frame = 0;
+                }
+            }
+            FlareState::Burst => {
+                let at = Affine3A::from_rotation_translation(rotation, f.burst);
+                if f.frame == FLARE_BURST_DELAY {
+                    f.slots[2] = spawn(&mut commands, &lib, FLARE_EFFECTS[2], at);
+                } else if f.frame == FLARE_BURST_DELAY + 1 {
+                    f.slots[3] = spawn(&mut commands, &lib, FLARE_EFFECTS[3], at);
+                } else if f.frame >= FLARE_BURST_DELAY + FLARE_HANG {
+                    stop(&mut effects, f.slots[3]);
+                    stop(&mut effects, f.slots[1]);
+                    commands.entity(entity).despawn();
+                    continue;
+                }
             }
         }
-        if emit {
-            let (def, mat) = &effects.parts[if f.life > 300 {"WS2_pln_sign_tail_smk"} else {"WS2_pln_sign_smk_bl_loop"}];
-            let alpha = def.color[3] as f32/255.0*0.18;
-            let mut material = materials.get(mat).unwrap().clone(); material.base_color.set_alpha(alpha);
-            let lifetime = def.life.max(0.1);
-            // ponytail: original textures/base parameters; the full REFF child,
-            // TEV and keyframe curves still need a particle-engine rewrite.
-            commands.spawn((Mesh3d(effects.quad.clone()), MeshMaterial3d(materials.add(material)), Transform::from_translation(t.translation).with_scale(Vec3::new(def.size[0]*2.0, def.size[1]*2.0, 1.0)), ProjectileSprite, FlareTrail { remaining: lifetime, lifetime, alpha, vel: Vec3::Y*6.0 }));
+        // The start effect rides the plane; the tail follows the flare.
+        if let Some(mut fx) = f.slots[0].and_then(|e| effects.get_mut(e).ok()) { fx.root = launch; }
+        if let Some(mut fx) = f.slots[1].and_then(|e| effects.get_mut(e).ok()) {
+            fx.root = Affine3A::from_rotation_translation(Quat::from_mat3a(&f.launch.matrix3), f.pos);
         }
-    }
-    for (e, mut smoke, mut t, mat) in &mut smoke {
-        smoke.remaining -= time.delta_secs(); t.scale.x += time.delta_secs()*2.0; t.scale.y += time.delta_secs()*2.0; t.translation += smoke.vel*time.delta_secs();
-        if let Some(mut material) = materials.get_mut(&mat.0) { material.base_color.set_alpha(smoke.alpha*(smoke.remaining/smoke.lifetime).max(0.0)); }
-        if smoke.remaining <= 0.0 { commands.entity(e).despawn(); }
+        f.frame += 1;
     }
 }
 
@@ -560,9 +604,7 @@ fn projectiles(
     mut commands: Commands,
     col: Res<Collision>,
     mut shots: MessageWriter<Shot>,
-    mut sounds: MessageWriter<crate::sound::Sound>,
-    mut bullets: Query<(Entity, &mut Bullet, &mut Transform), Without<Flare>>,
-    mut flares: Query<(Entity, &mut Flare, &mut Transform), Without<Bullet>>,
+    mut bullets: Query<(Entity, &mut Bullet, &mut Transform)>,
 ) {
     for (e, mut b, mut t) in &mut bullets {
         let len = b.vel.length();
@@ -576,17 +618,6 @@ fn projectiles(
         // The original swells each shot by 10% of its base size per frame.
         t.scale = Vec3::splat(2.0 * (1.0 + 0.1 * b.age as f32));
         shots.write(Shot { pos: t.translation, radius: 30.0 });
-    }
-    for (e, mut f, mut t) in &mut flares {
-        if f.life == 0 {
-            commands.entity(e).despawn();
-            continue;
-        }
-        f.life -= 1;
-        if f.life == 300 { sounds.write(crate::sound::Sound::effect("SE_PLN_ILLUM_FLAME_PLAYER_EXPLODE", Some(t.translation))); }
-        f.vel *= 0.985;
-        f.vel.y -= 0.02;
-        t.translation += f.vel;
     }
 }
 
