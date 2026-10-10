@@ -240,9 +240,16 @@ fn start_animation(ready: On<WorldInstanceReady>, children: Query<&Children>, an
     }
 }
 
+/// The animated node named `name`. glTF wrappers can share the bone's name
+/// (the blimp has three `WS2_common_airship` entities, only the deepest moves);
+/// descendants come breadth-first, so take the last match.
+fn bone(root: Entity, name: &str, children: &Query<&Children>, names: &Query<&Name>) -> Entity {
+    children.iter_descendants(root).filter(|&e| names.get(e).is_ok_and(|n| n.as_str() == name)).last().unwrap_or(root)
+}
+
 fn attach_point(ready: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, carried: Query<&Carried>, points: Res<IPoints>, assets: Res<AssetServer>, mut commands: Commands) {
     let Ok(carried) = carried.get(ready.entity) else { return };
-    let bone = children.iter_descendants(ready.entity).find(|&e| names.get(e).is_ok_and(|n| n.as_str() == carried.bone)).unwrap_or(ready.entity);
+    let bone = bone(ready.entity, carried.bone, &children, &names);
     commands.entity(bone).with_children(|c| {
         c.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/ipoint.glb"))), Transform::from_translation(points.0[carried.index].pos), Marker(carried.index), crate::ipoint::MarkerFade::default())).observe(crate::ipoint::attach_visuals);
     });
@@ -331,7 +338,7 @@ mod tests {
 
 fn attach_sound(ready: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, attached: Query<&AttachedSound>, assets: Res<AssetServer>, sounds: Res<Sounds>, mut commands: Commands) {
     let Ok(sound) = attached.get(ready.entity) else { return };
-    let bone = children.iter_descendants(ready.entity).find(|&e| names.get(e).is_ok_and(|n| n.as_str() == sound.bone)).unwrap_or(ready.entity);
+    let bone = bone(ready.entity, sound.bone, &children, &names);
     crate::sound::source(&mut commands, &assets, &sounds, bone, sound.name, 1200.0);
 }
 

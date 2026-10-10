@@ -1039,4 +1039,22 @@ mod tests {
         res.reverse = 1;
         assert_eq!(tex_uv(Vec2::ZERO, &p, 0, &res).x, 2.0);
     }
+
+    /// Needs extracted effects; skipped without them. A water hit must not
+    /// leave anything behind.
+    #[test]
+    fn bullet_water_hit_finishes() {
+        if !crate::asset_dir().join("effects/pln.json").exists() { return; }
+        let lib: HashMap<String, EmitterRes> = crate::read_json("effects/pln.json");
+        let lib = ParticleLib(lib.into_iter().map(|(k, v)| (k, Arc::new(v))).collect());
+        let mut world = World::new();
+        let entity = spawn(&mut world.commands(), &lib, "WS2_pln_bullet_water", Affine3A::IDENTITY).unwrap();
+        world.flush();
+        let mut fx = world.get_mut::<Effect>(entity).unwrap();
+        for _ in 0..600 {
+            step_effect(&mut fx, &lib);
+            if fx.finished() { break; }
+        }
+        assert!(fx.finished(), "a water hit must end within 10 seconds");
+    }
 }
