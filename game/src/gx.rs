@@ -105,12 +105,15 @@ pub fn shaded(color: Color, globals: Handle<ShaderBuffer>) -> GxMaterial {
     GxMaterial { tev, t0: None, t1: None, t2: None, t3: None, t4: None, t5: None, t6: None, t7: None, globals, alpha_mode: AlphaMode::Opaque, srt: [[1.0, 1.0, 0.0, 0.0, 0.0]; 8], base: [Vec4::ONE; 11] }
 }
 
-/// NW4R's Maya-convention texture matrix.
+/// NW4R's Maya-convention texture matrix. Scale pivots on the texture centre:
+/// without rotation, u' = sx (u - 0.5 - tx) + 0.5 and t' = sy (t - 0.5 + ty) + 0.5.
+/// The firework burst relies on it: its texture holds one mirrored quadrant
+/// centred on (1, 1), drawn with scale 2 and translation (-0.25, 0.25).
 pub fn tex_mtx([sx, sy, rot, tx, ty]: [f32; 5]) -> [Vec4; 2] {
     let (s, c) = rot.to_radians().sin_cos();
     [
-        Vec4::new(sx * c, -sx * s, sx * ((-0.5 * c) - (0.5 * s - 0.5) - tx), 0.0),
-        Vec4::new(sy * s, sy * c, sy * ((-0.5 * c) + (0.5 * s - 0.5) + ty) + 1.0, 0.0),
+        Vec4::new(sx * c, -sx * s, sx * ((-0.5 * c) - (0.5 * s) - tx) + 0.5, 0.0),
+        Vec4::new(sy * s, sy * c, sy * ((-0.5 * c) + (0.5 * s) + ty) + 0.5, 0.0),
     ]
 }
 
@@ -405,5 +408,22 @@ fn billboards(cam: Single<&GlobalTransform, With<crate::world::MainCamera>>, par
             cam.rotation
         };
         t.rotation = p.compute_transform().rotation.inverse() * world;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn apply(m: [Vec4; 2], st: Vec2) -> Vec2 { Vec2::new(m[0].xyz().dot(st.extend(1.0)), m[1].xyz().dot(st.extend(1.0))) }
+
+    #[test]
+    fn texture_matrix_scales_about_the_centre() {
+        let id = tex_mtx([1.0, 1.0, 0.0, 0.0, 0.0]);
+        assert!(apply(id, Vec2::new(0.2, 0.7)).abs_diff_eq(Vec2::new(0.2, 0.7), 1e-6));
+        // Firework: the quad centre lands on the mirrored quadrant's corner.
+        let fw = tex_mtx([2.0, 2.0, 0.0, -0.25, 0.25]);
+        assert!(apply(fw, Vec2::splat(0.5)).abs_diff_eq(Vec2::ONE, 1e-6));
+        assert!(apply(fw, Vec2::ZERO).abs_diff_eq(Vec2::ZERO, 1e-6));
     }
 }

@@ -388,7 +388,8 @@ fn shape(d: &[u8], o: usize, arr: &[Vec<Array>; 4]) -> Result<Shape> {
                     full.push(slots[pnmtx.min(9) as usize] as u32);
                     let id = *dedup.entry(full).or_insert_with(|| {
                         let val = |a: u8| attrs.iter().position(|x| x.0 == a).map(|i| key[i] as usize);
-                        let pos = pa.get(d, val(1).unwrap_or(0), 3);
+                        // POS_XY arrays (comps 0, e.g. flat billboards) store no Z.
+                        let pos = pa.get(d, val(1).unwrap_or(0), if pa.comps == 0 { 2 } else { 3 });
                         let nrm = match (na, val(2)) {
                             (Some(a), Some(i)) if kind(11) != 0 => a.get(d, if nbt { i * 3 } else { i }, 3),
                             _ => vec![0.0, 1.0, 0.0],
@@ -404,7 +405,7 @@ fn shape(d: &[u8], o: usize, arr: &[Vec<Array>; 4]) -> Result<Shape> {
                             }
                             _ => [0.0, 0.0],
                         });
-                        verts.push(Vtx { pos: [pos[0], pos[1], pos[2]], nrm: [nrm[0], nrm[1], nrm[2]], clr, uv, mtx: slots[pnmtx.min(9) as usize] });
+                        verts.push(Vtx { pos: [pos[0], pos[1], *pos.get(2).unwrap_or(&0.0)], nrm: [nrm[0], nrm[1], nrm[2]], clr, uv, mtx: slots[pnmtx.min(9) as usize] });
                         (verts.len() - 1) as u32
                     });
                     ids.push(id);
