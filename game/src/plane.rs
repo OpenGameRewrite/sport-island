@@ -409,7 +409,7 @@ fn despawn_plane(mut commands: Commands, planes: Query<Entity, With<Plane>>) {
 }
 
 /// The propeller is a separate model mounted on the `propeller_point` bone.
-pub(crate) fn attach_propeller(ev: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+pub(crate) fn attach_propeller(ev: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<crate::gx::GxMaterial>>, globals: Res<crate::gx::GxGlobals>) {
     for e in children.iter_descendants(ev.entity) {
         if names.get(e).is_ok_and(|n| n.as_str() == "propeller_point") {
             commands.entity(e).with_child((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/propeller.glb"))), Transform::default(), Propeller));
@@ -419,7 +419,7 @@ pub(crate) fn attach_propeller(ev: On<WorldInstanceReady>, children: Query<&Chil
                 // Cockpit bones mark the seat, not the standing body's feet.
                 // Anchor its hips (y=15) here and fit the legs inside the hull.
                 c.spawn((Name::new("Seated pilot"), Transform::from_xyz(0.0, -3.75, 0.0).with_scale(Vec3::splat(0.25)), Visibility::default()))
-                    .with_children(|c| crate::player::body(c, &mut meshes, &mut materials, true));
+                    .with_children(|c| crate::player::body(c, &mut meshes, &mut materials, &globals, true));
             });
         }
     }

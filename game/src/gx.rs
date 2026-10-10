@@ -93,6 +93,18 @@ impl GxMaterial {
     }
 }
 
+/// An untextured material lit like the island's models: sun, ambient and fog
+/// for the current time of day.
+pub fn shaded(color: Color, globals: Handle<ShaderBuffer>) -> GxMaterial {
+    let c = color.to_srgba();
+    // One stage passing the lit material colour through (d = rasterized colour/alpha, clamped).
+    let mut tev = TevUniform { chan: UVec4::new(2, 0, 1, 1), swap: [UVec4::new(0, 1, 2, 3); 4], ..default() };
+    tev.stages[0] = UVec4::new(15 << 12 | 15 << 8 | 15 << 4 | 10 | 1 << 19, 7 << 13 | 7 << 10 | 7 << 7 | 5 << 4 | 1 << 19, 0, 0);
+    tev.mat_color = Vec4::new(c.red, c.green, c.blue, 1.0);
+    tev.alpha_test = UVec4::new(7 | 7 << 4, 0, 0, 0);
+    GxMaterial { tev, t0: None, t1: None, t2: None, t3: None, t4: None, t5: None, t6: None, t7: None, globals, alpha_mode: AlphaMode::Opaque, srt: [[1.0, 1.0, 0.0, 0.0, 0.0]; 8], base: [Vec4::ONE; 11] }
+}
+
 /// NW4R's Maya-convention texture matrix.
 pub fn tex_mtx([sx, sy, rot, tx, ty]: [f32; 5]) -> [Vec4; 2] {
     let (s, c) = rot.to_radians().sin_cos();
