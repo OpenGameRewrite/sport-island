@@ -640,6 +640,19 @@ pub fn extract(path: &Path, out: &Path) -> Result<()> {
         }
         println!("  vehicle {v}");
     }
+    pwr.livery = None;
+    // Course objects (pads, rings, gates, thermals, trophies) and free-flight extras.
+    for c in ["race", "freeflight"] {
+        let data = format!("{c}_");
+        let containers = [c, data.as_str(), "common", "wuhu", "wuhu_sunny"];
+        let Some(list) = pwr.tocs.get(c) else { continue };
+        for r in list.iter().filter(|r| r.kind == "MODL" && r.name.ends_with(".mod")) {
+            let Ok((meshes, joints)) = model(&pwr.payloads[c][r.off..r.off + r.size]) else { println!("  skipped {c}/{}", r.name); continue };
+            let stem = r.name.trim_end_matches(".mod");
+            fs::write(out.join(format!("models/{c}_{stem}.glb")), to_glb(&pwr, &containers, &meshes, &joints, stem))?;
+        }
+        println!("  objects {c}");
+    }
     let names: Vec<_> = favs.iter().map(|f| json!({ "name": f.name, "primary": format!("#{:08x}", f.primary) })).collect();
     fs::write(out.join("data/liveries.json"), serde_json::to_vec(&json!({ "favorites": names, "vehicles": liveries }))?)?;
     fs::write(out.join("VERSION"), format!("{}\n", env!("CARGO_PKG_VERSION")))?;
