@@ -56,7 +56,7 @@ struct Target { radius: f32, respawn: f32 }
 #[derive(Component)]
 struct Ambient { kind: u16, range: f32, next: f32 }
 #[derive(Component)]
-struct Firework { next: f32, explode: f32, phase: f32 }
+struct Firework { phase: f32, rng: u32, base: Vec3, display: u8 }
 #[derive(Component)]
 struct Flock { center: Vec3, radius: f32, phase: f32 }
 
@@ -75,7 +75,8 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(Island(objects))
         .add_systems(Startup, setup)
         .add_systems(Update, visibility)
-        .add_systems(Update, (guide_route, follow, birds, targets, ambient, fireworks).chain().run_if(crate::menu::playing));
+        .add_systems(Update, (guide_route, follow, birds, targets, ambient).chain().run_if(crate::menu::playing))
+        .add_systems(FixedUpdate, fireworks.run_if(crate::menu::playing));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -104,7 +105,10 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<As
             let root = commands.spawn((p.transform(), Visibility::default(), Times(4))).id();
             let (graph, node) = AnimationGraph::from_clip(assets.load(GltfAssetLabel::Animation(0).from_asset("models/fireworks.glb")));
             commands.entity(root).with_children(|c| {
-                c.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/fireworks.glb"))), Visibility::Hidden, Animated { graph: graphs.add(graph), node, phase: 0.0, speed: 1.0 }, Firework { next: i as f32 % 10.0, explode: 0.0, phase: 0.0 })).observe(start_animation);
+                let graph = graphs.add(graph);
+                for slot in 0..12 {
+                    c.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/fireworks.glb"))), Visibility::Hidden, Animated { graph: graph.clone(), node, phase: 0.0, speed: 1.0 }, Firework { phase: -1.0, rng: (i as u32*12+slot+1).wrapping_mul(2654435761), base: p.pos, display: if p.pos.x > 0.0 {0} else {1} })).observe(start_animation);
+                }
             });
             continue;
         }
@@ -128,8 +132,8 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<As
             37 => ("car", Some(3), 1.0, Some("SE_CMN_ELEC_CAR_RUNNING_1")),
             43 => ("seaguard", None, 1.0, None),
             45 => ("whale", Some(3), 1.0, None),
-            // ponytail: the liner clip encodes a route in 30 frames; exact original traversal timing is not recovered.
-            54 => ("liner", Some(0), 0.001, Some("SE_CMN_MOVE_LINER")),
+            // Original advances normalized clip time by 0.00067 per 60 Hz tick.
+            54 => ("liner", Some(0), 29.0*0.00067, Some("SE_CMN_MOVE_LINER")),
             _ => continue,
         };
         let path = format!("models/{model}.glb");
@@ -137,7 +141,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<As
         // Cars with baked world paths and the airship are already in world coordinates.
         let transform = if p.kind == 37 || p.kind == 3 || p.kind == 54 || p.kind == 46 || p.kind == 45 { Transform::default() } else { p.transform() };
         let entity = commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path.clone()))), transform, Visibility::default(), Times(*mask))).id();
-        let mut phase = i as f32 * 1.7;
+        let mut phase = if p.kind == 54 {0.0} else {i as f32 * 1.7};
         if p.kind == 37 {
             if let Some((_, chosen, frame)) = car_motion.motion.iter().flat_map(|m| m.points.iter().enumerate().map(move |(frame, pos)| (p.pos.distance_squared(*pos), m.clip, frame))).min_by(|a, b| a.0.total_cmp(&b.0)) {
                 clip = Some(chosen);
@@ -180,7 +184,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<As
     for (i, route) in routes.routes.into_iter().enumerate() {
         if route.points.len() < 2 { continue; }
         let pos = route.points[0];
-        let entity = commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/seaplane.glb"))), Transform::from_translation(pos), Visibility::default(), Follower { points: route.points, segment: 0, distance: 0.0, speed: 280.0, looping: route.flags & 1 != 0 })).observe(crate::player::no_culling).id();
+        let entity = commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/seaplane.glb"))), Transform::from_translation(pos), Visibility::default(), Follower { points: route.points, segment: 0, distance: 0.0, speed: 3.4*60.0, looping: route.flags & 1 != 0 })).observe(crate::player::no_culling).id();
         crate::sound::source(&mut commands, &assets, &sounds, entity, "SE_CMN_SEA_PLANE", 1200.0);
         if i == 0 { commands.entity(entity).insert(Carried { index: 78, bone: "WS2_common_seaplane" }).observe(attach_point); }
     }
@@ -268,6 +272,21 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     #[test]
+    fn fireworks_suppress_the_nearby_display_but_launch_the_distant_one() {
+        let mut w = World::new();
+        w.insert_resource(TimeOfDay(2)); w.init_resource::<Messages<Sound>>();
+        w.spawn((crate::world::MainCamera, GlobalTransform::from_translation(Vec3::ZERO)));
+        let seed = (0..1000).find(|s| {let mut s=*s; random(&mut s)%90==0}).unwrap();
+        let mut spawn = |base, display| w.spawn((Firework {phase:-1.0,rng:seed,base,display}, Animated {graph:default(),node:default(),phase:0.0,speed:1.0}, Transform::default(), Visibility::Hidden)).id();
+        let near = spawn(Vec3::ZERO,0); let far = spawn(Vec3::X*10000.0,1);
+        w.run_system_once(fireworks).unwrap();
+        assert!(w.get::<Firework>(near).unwrap().phase<0.0);
+        assert_eq!(w.get::<Visibility>(near),Some(&Visibility::Hidden));
+        assert_eq!(w.get::<Firework>(far).unwrap().phase,0.0);
+        w.insert_resource(TimeOfDay(0)); w.run_system_once(fireworks).unwrap();
+        assert_eq!(w.get::<Visibility>(far),Some(&Visibility::Hidden));
+    }
+    #[test]
     fn placement_keeps_original_forward_and_up_without_reflecting() {
         let p = Placement { group: 0, kind: 0, pos: Vec3::ONE, scale: Vec3::splat(2.0), rot: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0], params: [0; 5] };
         let t = p.transform();
@@ -325,24 +344,34 @@ fn ambient(mut commands: Commands, time: Res<Time>, tod: Res<TimeOfDay>, assets:
     }
 }
 
-fn fireworks(time: Res<Time>, tod: Res<TimeOfDay>, children: Query<&Children>, mut players: Query<&mut AnimationPlayer>, mut q: Query<(Entity, &mut Firework, &Animated, &GlobalTransform, &mut Visibility)>, mut sounds: MessageWriter<Sound>) {
-    for (entity, mut firework, animated, transform, mut visibility) in &mut q {
-        if tod.0 != 2 { *visibility = Visibility::Hidden; continue; }
-        let now = time.elapsed_secs();
-        if now >= firework.next {
-            firework.next = now + 8.0 + entity.index_u32() as f32 % 7.0;
-            firework.explode = now + 0.6;
-            firework.phase = now;
+/// Original suppresses displays within 5500 units of an aircraft. Otherwise
+/// it switches between either/both displays at 1/240 or 1/480 per tick. Each
+/// display has twelve burst slots (1/90, or 1/120 with both displays active).
+fn fireworks(tod: Res<TimeOfDay>, camera: Single<&GlobalTransform, With<crate::world::MainCamera>>, planes: Query<&GlobalTransform, With<Plane>>, children: Query<&Children>, mut players: Query<&mut AnimationPlayer>, mut q: Query<(Entity, &mut Firework, &Animated, &mut Transform, &mut Visibility)>, mut sounds: MessageWriter<Sound>, mut schedule: Local<Option<(u8,u32)>>) {
+    let (mask,rng) = schedule.get_or_insert((3,0x125ea));
+    let pos = planes.single().map_or(camera.translation(), |p| p.translation());
+    let near = q.iter().fold(0, |bits,(_,f,_,_,_)| bits | if pos.distance(f.base)<5500.0 {1<<f.display} else {0});
+    if near != 0 { *mask = 3 & !near; }
+    else if random(rng) % if *mask==3 {480} else {240} == 0 { *mask = if *mask>=3 {1} else {*mask+1}; }
+    for (entity, mut f, animated, mut t, mut visibility) in &mut q {
+        if tod.0 != 2 { *visibility = Visibility::Hidden; f.phase = -1.0; continue; }
+        if f.phase < 0.0 {
+            if *mask & (1<<f.display) == 0 { continue; }
+            if random(&mut f.rng) % if *mask==3 {120} else {90} != 0 { continue; }
+            f.phase = 0.0;
+            let scale = 0.5 + (random(&mut f.rng) % 65536) as f32/65536.0*0.2;
+            t.scale = Vec3::splat(scale);
+            t.rotation = Quat::from_rotation_z((random(&mut f.rng) % 65536) as f32/65536.0*std::f32::consts::TAU);
+            // ponytail: burst jitter extent remains approximate; original color tracks are not yet rendered.
+            t.translation = Vec3::new((random(&mut f.rng)%601) as f32-300.0, (random(&mut f.rng)%301) as f32-150.0, (random(&mut f.rng)%601) as f32-300.0);
             *visibility = Visibility::Inherited;
-            for e in children.iter_descendants(entity) {
-                if let Ok(mut player) = players.get_mut(e) { player.start(animated.node); }
-            }
-            sounds.write(Sound::effect("SE_CMN_FIREWORKS_LAUNCH", Some(transform.translation())));
+            for e in children.iter_descendants(entity) { if let Ok(mut p) = players.get_mut(e) { p.start(animated.node); } }
+            if random(&mut f.rng) % 4 == 0 { sounds.write(Sound::effect("SE_CMN_FIREWORKS_LAUNCH", Some(f.base))); }
+            sounds.write(Sound::effect("SE_CMN_FIREWORKS_EXPLODE", Some(f.base+t.translation)));
+        } else {
+            f.phase += 1.0/60.0;
+            if f.phase >= 79.0/60.0 { *visibility = Visibility::Hidden; f.phase = -1.0; }
         }
-        if firework.explode > 0.0 && now >= firework.explode {
-            sounds.write(Sound::effect("SE_CMN_FIREWORKS_EXPLODE", Some(transform.translation())));
-            firework.explode = 0.0;
-        }
-        if now - firework.phase > 1.4 { *visibility = Visibility::Hidden; }
     }
 }
+fn random(seed: &mut u32) -> u32 { *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); *seed >> 16 }

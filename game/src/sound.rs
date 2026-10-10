@@ -28,14 +28,35 @@ pub struct Emitter {
 
 #[derive(Component)]
 struct Engine;
+#[derive(Component)] struct MenuMusic(bool);
 
 pub fn plugin(app: &mut App) {
     let path = crate::asset_dir().join("audio/index.json");
     let index = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     app.insert_resource(Sounds(index))
         .add_message::<Sound>()
+        .add_systems(OnEnter(crate::AppState::Title), menu_music_start)
+        .add_systems(Update, menu_music)
+        .add_systems(OnExit(crate::AppState::Title), menu_music_stop)
         .add_systems(Update, (effects, engine, volumes).chain());
 }
+
+fn menu_music_start(mut commands: Commands, assets: Res<AssetServer>, sounds: Res<Sounds>) {
+    if !sounds.0.contains_key("STM_TITLE") { return; }
+    let intro = sounds.0.contains_key("STM_TITLE_intro");
+    if std::env::var_os("SI_LOG").is_some() { info!("Menu music: original {}", if intro {"introduction"} else {"loop"}); }
+    commands.spawn((AudioPlayer::new(assets.load(if intro {"audio/STM_TITLE_intro.wav"} else {"audio/STM_TITLE.wav"})), (if intro {PlaybackSettings::ONCE} else {PlaybackSettings::LOOP}).with_volume(Volume::Linear(0.45)), MenuMusic(intro)));
+}
+fn menu_music(mut commands: Commands, assets: Res<AssetServer>, music: Query<(Entity, &MenuMusic, &AudioSink)>) {
+    for (e, music, sink) in &music {
+        if music.0 && sink.empty() {
+            if std::env::var_os("SI_LOG").is_some() { info!("Menu music: original loop"); }
+            commands.entity(e).despawn();
+            commands.spawn((AudioPlayer::new(assets.load("audio/STM_TITLE.wav")), PlaybackSettings::LOOP.with_volume(Volume::Linear(0.45)), MenuMusic(false)));
+        }
+    }
+}
+fn menu_music_stop(mut commands: Commands, music: Query<Entity, With<MenuMusic>>) { for e in &music { commands.entity(e).despawn(); } }
 
 /// Adds a source to an entity without disturbing its model or animation.
 pub fn source(commands: &mut Commands, assets: &AssetServer, sounds: &Sounds, entity: Entity, name: &str, range: f32) {

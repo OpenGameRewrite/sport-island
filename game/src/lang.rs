@@ -33,8 +33,8 @@ impl Texts {
         s.chars()
             .map(|c| match c as u32 {
                 0x332B => "ⓘ".to_string(),
-                0xE041 => key(pad, "Right Stick", "Mouse"),
-                0xE042 => key(pad, "A", "Space"),
+                0xE041 => key(pad, self.ui(Ui::RightStick), self.ui(Ui::Mouse)),
+                0xE042 => key(pad, "A", self.ui(Ui::Space)),
                 0xE043 => key(pad, "B", "C"),
                 0xE045 => key(pad, "Start", "Esc"),
                 0xE047 => key(pad, "Y", "F"),
@@ -48,6 +48,23 @@ impl Texts {
     pub fn ui(&self, key: Ui) -> &'static str {
         let i = ["EN", "FR", "GE", "SP", "IT"].iter().position(|c| *c == self.code).unwrap_or(0);
         UI[key as usize][i]
+    }
+
+    pub fn action(&self, index: usize) -> &'static str {
+        let i = ["EN", "FR", "GE", "SP", "IT"].iter().position(|c| *c == self.code).unwrap_or(0);
+        ACTIONS[index][i]
+    }
+
+    pub fn binding(&self, raw: &str) -> String {
+        let special = match raw {
+            "Space" => Some(Ui::Space), "ShiftLeft" => Some(Ui::LeftShift), "ControlLeft" => Some(Ui::LeftCtrl),
+            "MouseLeft" => Some(Ui::MouseLeft), "MouseRight" => Some(Ui::MouseRight), "MouseMiddle" => Some(Ui::MouseMiddle),
+            "DPadLeft" => Some(Ui::DLeft), "DPadRight" => Some(Ui::DRight), "DPadUp" => Some(Ui::DUp), "DPadDown" => Some(Ui::DDown),
+            "South" => Some(Ui::South), "East" => Some(Ui::East), "West" => Some(Ui::West), "North" => Some(Ui::North),
+            "Escape" => Some(Ui::Escape), "Select" => Some(Ui::Select),
+            _ => None,
+        };
+        special.map_or_else(|| crate::input::label(raw), |s| self.ui(s).into())
     }
 }
 
@@ -72,11 +89,15 @@ pub enum Ui {
     Language,
     Quit,
     Back,
-    ChooseLanguage,
     BoardHint,
     Controls,
     Livery,
     ResetControls,
+    Start, Settings, FlightSensitivity, LookSensitivity, Speedometer, Speed, Units,
+    Boost, Slow, Engine, Waiting, MenuHint, ControlsHint, RecordHint, NextBoarding,
+    Red, White, Yellow, Orange, Blue, Space, LeftShift, LeftCtrl, MouseLeft, MouseRight, MouseMiddle,
+    DLeft, DRight, DUp, DDown,
+    South, East, West, North, Escape, Select, RightStick, Mouse,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -95,11 +116,60 @@ const UI: &[[&str; 5]] = &[
     ["Language", "Langue", "Sprache", "Idioma", "Lingua"],
     ["Quit", "Quitter", "Beenden", "Salir", "Esci"],
     ["Back", "Retour", "Zurück", "Volver", "Indietro"],
-    ["Choose your language", "Choisissez votre langue", "Sprache wählen", "Elige tu idioma", "Scegli la lingua"],
     ["Board plane", "Monter dans l'avion", "Ins Flugzeug", "Subir al avión", "Sali sull'aereo"],
     ["Controls", "Commandes", "Steuerung", "Controles", "Comandi"],
     ["Livery", "Couleur", "Farbe", "Color", "Colore"],
     ["Reset controls", "Réinitialiser", "Zurücksetzen", "Restablecer controles", "Ripristina comandi"],
+    ["Explore", "Explorer", "Erkunden", "Explorar", "Esplora"],
+    ["Settings", "Options", "Einstellungen", "Opciones", "Impostazioni"],
+    ["Flight sensitivity", "Sensibilité du pilotage", "Flugempfindlichkeit", "Sensibilidad de vuelo", "Sensibilità di volo"],
+    ["Look sensitivity", "Sensibilité de la caméra", "Kameraempfindlichkeit", "Sensibilidad de cámara", "Sensibilità della visuale"],
+    ["Speedometer", "Indicateur de vitesse", "Geschwindigkeitsanzeige", "Velocímetro", "Indicatore di velocità"],
+    ["Speed", "Vitesse", "Geschwindigkeit", "Velocidad", "Velocità"],
+    ["units/s", "unités/s", "Einheiten/s", "unidades/s", "unità/s"],
+    ["Boost impulse", "Impulsion d'accélération", "Beschleunigungsimpuls", "Impulso de aceleración", "Impulso di accelerazione"],
+    ["Slow impulse", "Impulsion de freinage", "Bremsimpuls", "Impulso de frenado", "Impulso di frenata"],
+    ["Engine", "Moteur", "Motor", "Motor", "Motore"],
+    ["Press a key or button… (Esc: cancel)", "Appuyez sur une touche… (Échap : annuler)", "Taste drücken… (Esc: abbrechen)", "Pulsa una tecla o botón… (Esc: cancelar)", "Premi un tasto… (Esc: annulla)"],
+    ["Click to select · ◀ ▶ to change · Esc: back", "Cliquez pour choisir · ◀ ▶ modifier · Échap : retour", "Klicken: wählen · ◀ ▶ ändern · Esc: zurück", "Clic para elegir · ◀ ▶ cambiar · Esc: volver", "Clic per scegliere · ◀ ▶ cambia · Esc: indietro"],
+    ["Select an action, then press its new key or button", "Choisissez une action, puis sa nouvelle touche", "Aktion wählen, dann neue Taste drücken", "Elige una acción y pulsa su nueva tecla o botón", "Scegli un'azione, poi premi il nuovo tasto"],
+    ["↑ ↓ / wheel: scroll · ◀ ▶: page · Day / Evening / Night", "↑ ↓ / molette : défiler · ◀ ▶ : page · Jour / Soir / Nuit", "↑ ↓ / Mausrad: scrollen · ◀ ▶: Seite · Tag / Abend / Nacht", "↑ ↓ / rueda: desplazar · ◀ ▶: página · Día / Atardecer / Noche", "↑ ↓ / rotella: scorri · ◀ ▶: pagina · Giorno / Sera / Notte"],
+    ["next boarding", "au prochain embarquement", "beim nächsten Einsteigen", "al volver a subir", "al prossimo imbarco"],
+    ["Red", "Rouge", "Rot", "Rojo", "Rosso"], ["White", "Blanc", "Weiß", "Blanco", "Bianco"],
+    ["Yellow", "Jaune", "Gelb", "Amarillo", "Giallo"], ["Orange", "Orange", "Orange", "Naranja", "Arancione"], ["Blue", "Bleu", "Blau", "Azul", "Blu"],
+    ["Space", "Espace", "Leertaste", "Espacio", "Spazio"],
+    ["Left Shift", "Maj gauche", "Umschalt links", "Mayús izquierda", "Maiusc sinistro"],
+    ["Left Ctrl", "Ctrl gauche", "Strg links", "Ctrl izquierda", "Ctrl sinistro"],
+    ["Left click", "Clic gauche", "Linksklick", "Clic izquierdo", "Clic sinistro"],
+    ["Right click", "Clic droit", "Rechtsklick", "Clic derecho", "Clic destro"],
+    ["Middle click", "Clic central", "Mittelklick", "Clic central", "Clic centrale"],
+    ["D-pad ←", "Croix ←", "Steuerkreuz ←", "Cruceta ←", "Croce ←"],
+    ["D-pad →", "Croix →", "Steuerkreuz →", "Cruceta →", "Croce →"],
+    ["D-pad ↑", "Croix ↑", "Steuerkreuz ↑", "Cruceta ↑", "Croce ↑"],
+    ["D-pad ↓", "Croix ↓", "Steuerkreuz ↓", "Cruceta ↓", "Croce ↓"],
+    ["A / Cross", "A / Croix", "A / Kreuz", "A / Cruz", "A / Croce"],
+    ["B / Circle", "B / Cercle", "B / Kreis", "B / Círculo", "B / Cerchio"],
+    ["X / Square", "X / Carré", "X / Quadrat", "X / Cuadrado", "X / Quadrato"],
+    ["Y / Triangle", "Y / Triangle", "Y / Dreieck", "Y / Triángulo", "Y / Triangolo"],
+    ["Escape", "Échap", "Esc", "Esc", "Esc"],
+    ["Back / Select", "Retour / Select", "Zurück / Select", "Atrás / Select", "Indietro / Select"],
+    ["Right stick", "Stick droit", "Rechter Stick", "Stick derecho", "Stick destro"],
+    ["Mouse", "Souris", "Maus", "Ratón", "Mouse"],
+];
+
+const ACTIONS: &[[&str; 5]] = &[
+    ["Left", "Gauche", "Links", "Izquierda", "Sinistra"], ["Right", "Droite", "Rechts", "Derecha", "Destra"],
+    ["Forward / nose down", "Avancer / piquer", "Vorwärts / Nase senken", "Avanzar / bajar morro", "Avanti / picchia"],
+    ["Back / nose up", "Reculer / cabrer", "Rückwärts / Nase heben", "Retroceder / subir morro", "Indietro / cabra"],
+    ["Run / boost impulse", "Courir / accélération", "Laufen / Beschleunigungsimpuls", "Correr / impulso de aceleración", "Corri / accelerazione"],
+    ["Slow impulse", "Impulsion de freinage", "Bremsimpuls", "Impulso de frenado", "Impulso di frenata"],
+    ["Jump / shoot", "Sauter / tirer", "Springen / schießen", "Saltar / disparar", "Salta / spara"],
+    ["Cut engine", "Couper le moteur", "Motor aus", "Apagar motor", "Spegni motore"],
+    ["Signal flare", "Fusée éclairante", "Leuchtkugel", "Bengala de señales", "Razzo di segnalazione"],
+    ["Board / parachute", "Embarquer / parachute", "Einsteigen / Fallschirm", "Subir / paracaídas", "Sali / paracadute"],
+    ["Pause", "Pause", "Pause", "Pausa", "Pausa"], ["Time of day", "Moment de la journée", "Tageszeit", "Hora del día", "Ora del giorno"],
+    ["i-point list", "Liste des points ⓘ", "ⓘ-Punkteliste", "Lista de puntos ⓘ", "Elenco punti ⓘ"],
+    ["Speedometer", "Indicateur de vitesse", "Geschwindigkeitsanzeige", "Velocímetro", "Indicatore di velocità"],
 ];
 
 pub fn plugin(app: &mut App) {

@@ -20,9 +20,9 @@ cargo run --release --locked -j 2 -p sport-island-extract -- "path/to/Wii Sports
 cargo run --release --locked -j 2 -p sport-island
 ```
 
-Choose a language on the title screen. The title and pause menus also offer
-plane selection, colors and saved control bindings; pitch inversion is in the
-pause menu. Navigate with arrow keys, D-pad or left stick; Enter / A confirms.
+Choose your language, aircraft and color, then select **Explore**. Menus support
+mouse clicks, arrow keys and gamepads. **Settings** includes flight/camera
+sensitivity, pitch inversion and a speedometer; **Controls** saves your bindings.
 
 ## Controls
 
@@ -38,18 +38,23 @@ pause menu. Navigate with arrow keys, D-pad or left stick; Enter / A confirms.
 | Board / parachute | E | X / Square |
 | Pause | Escape | Start |
 | Time of day | T | Back / Select |
+| i-point list | Tab | LB / L1 |
+| Speedometer | V | RB / R1 |
 
-Pull back on the stick (S) to take off from the water. Release and press again
-for another boost. Free look holds briefly before
-returning to the flight camera. Each sightseeing point has a reading for each
-time of day; see your collection in the pause menu. Progress saves automatically
+Pull back on the stick (S) to take off from the water. Boost and slowing are
+temporary impulses: release and press again to repeat them. The optional
+speedometer shows game units per second and the remaining impulse. Free look
+holds briefly before returning to the flight camera. Hold ↑/↓ or use the wheel
+to browse i-points; ←/→ changes pages. The paused ⓘ counter also opens the list.
+Each point has a reading for each time of day. Progress saves automatically
 to `SportIsland/save.json` in your system's application-data folder.
 
 ## Work in progress
 
 Original scenery, messages and sounds come from your disc. Flight behavior is
 being reconstructed from the game, but this is still an exploration demo:
-some flight assistance, traffic, effects and sequenced audio remain approximate.
+wave/contact stabilization, some traffic steering, particles and parts of the
+sequence synthesizer remain approximate.
 
 ## About
 

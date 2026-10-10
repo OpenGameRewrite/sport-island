@@ -4,7 +4,8 @@
 //! by tail forces (steering), engine thrust, speed-dependent lift and per-axis
 //! drag, all in game units per 60 Hz frame. Core constants were recovered from
 //! the original, including terrain-normal assistance and the evolving up target.
-//! Water takeoff, reference-body stabilization and modern input adaptation are partial.
+//! Water contact uses the recovered release, damping and alignment curves.
+//! The modern input mapping and the remaining reference-body contacts are partial.
 
 use crate::collide::Collision;
 use crate::input::Controls;
@@ -56,6 +57,9 @@ pub struct Plane {
     inverted: f32,
     ground_up: Vec3,
     ground_strength: f32,
+    water_strength: f32,
+    water_release: f32,
+    contact_forward: Vec3,
 }
 
 #[derive(Resource)]
@@ -65,7 +69,7 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, gun_side: false, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0 }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, gun_side: false, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_forward: pose.rotation * Vec3::Z }
     }
     /// One original-rate physics tick, independent of rendering and collision.
     #[cfg(test)]
@@ -84,7 +88,7 @@ impl Plane {
         input = input.clamp(Vec2::NEG_ONE, Vec2::ONE);
         // Wiimote tilt was an attitude input. A stick/key maps directly to it;
         // simulation already supplies angular momentum, so another low-pass lags it.
-        self.ctrl = input;
+        self.ctrl = input * (1.0 - 0.95 * self.water_strength);
 
         let mut force = Vec3::ZERO;
         let mut torque = Vec3::ZERO;
@@ -141,6 +145,10 @@ impl Plane {
 
         let level = 1.0 - self.ctrl.y.abs();
         torque += y.cross(self.up_target) * LEVEL_TORQUE * level;
+        // Reference direction is disturbed by contacts and settles back to the
+        // nose with the original 0.01..0.05 water-dependent blend.
+        torque += z.cross(self.contact_forward) * 0.007;
+        self.contact_forward = self.contact_forward.lerp(z, 0.01 + 0.04*self.water_strength).normalize_or_zero();
 
         self.vel = self.vel * 0.997 + force;
         let local_t = rot.inverse() * torque;
@@ -177,10 +185,41 @@ impl Plane {
         Transform::from_translation(self.previous.translation.lerp(t.translation, fraction))
             .with_rotation(self.previous.rotation.slerp(t.rotation, fraction))
     }
+
+    fn water_contact(&mut self, t: &mut Transform, contact: Option<(f32, Vec3, f32)>, pitch: f32) {
+        let speed = (t.rotation.inverse()*self.vel).z;
+        let near = contact.map_or(0.0, |(clearance, _, _)| 1.0 - ((clearance-6.5)/1.0).clamp(0.0,1.0));
+        let speed_release = ((speed-1.0)/4.0).clamp(0.0,1.0);
+        let pitch_release = 1.0 - ((pitch+0.1)/0.1).clamp(0.0,1.0);
+        self.water_strength = (self.water_strength + near*0.1 - 0.02*(speed_release+pitch_release)).clamp(0.0,1.0);
+        self.water_release = (self.water_release + if self.water_strength > 0.0 {0.05} else {-0.01}).clamp(0.0,1.0);
+        let w = self.water_strength;
+        let mut local = t.rotation.inverse()*self.vel;
+        local.x *= 1.0-0.5*w;
+        if local.y < 0.0 {local.y *= 1.0-0.1*w;}
+        local.z *= if local.z < 0.0 {1.0-w} else {1.0-0.001*w};
+        self.vel = t.rotation*local;
+        if let Some((_, normal, height)) = contact {
+            let up = (t.rotation*Vec3::Y).lerp(normal,0.005*w).normalize_or_zero();
+            let nose = t.rotation*Vec3::Z;
+            let right = up.cross(nose).normalize_or_zero();
+            if right != Vec3::ZERO {
+                t.rotation = Quat::from_mat3(&Mat3::from_cols(right, nose.cross(right).normalize(), nose)).normalize();
+            }
+            // Contact frame correction from the original surface callback.
+            if self.vel.length_squared()>0.01 {
+                self.contact_forward = self.vel.normalize();
+                let correction = Quat::IDENTITY.slerp(Quat::from_rotation_arc(nose, self.contact_forward),0.01*(1.0-w));
+                t.rotation = (correction*t.rotation).normalize();
+            }
+            if t.translation.y < height+5.0 { t.translation.y = height+5.0; self.vel.y = self.vel.y.max(0.0); }
+        }
+    }
 }
 
 #[derive(Component)]
 struct PlaneModel;
+#[derive(Component)] struct PlaneAnimation { nodes: Vec<AnimationNodeIndex>, water: bool }
 
 #[derive(Component)]
 struct PlanePaint(u8);
@@ -201,6 +240,8 @@ struct Flare {
     vel: Vec3,
     life: u32,
 }
+#[derive(Component)] struct Speedometer;
+#[derive(Component)] struct FlareTrail(f32);
 
 /// Fired when something should pop (bullets, plane body).
 #[derive(Message)]
@@ -215,10 +256,13 @@ pub fn plugin(app: &mut App) {
     let placements: crate::scenery::Placements = crate::read_json("data/island_f0.json");
     let starts = std::array::from_fn(|i| placements.objects.iter().find(|p| p.group == 3 && p.kind == 2 && (p.params[1] >> 16) as usize == i).expect("original water departure missing").transform());
     app.insert_resource(FirstFlight { boarded: false, starts }).add_message::<Shot>()
+        .add_systems(Startup, speedometer_spawn)
+        .add_systems(Update, (speedometer, flare_visuals))
         .add_systems(Update, paint)
         .add_systems(Update, board.run_if(crate::menu::playing))
-        .add_systems(FixedUpdate, (fly, guns, projectiles).chain().run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
-        .add_systems(Update, (visuals, chase_camera, trails).run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
+        .add_systems(FixedUpdate, (fly, guns).chain().run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
+        .add_systems(FixedUpdate, projectiles.after(guns).run_if(crate::menu::playing))
+        .add_systems(Update, (visuals, animate, chase_camera, trails).run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
         .add_systems(OnExit(Mode::Fly), despawn_plane);
 }
 
@@ -250,15 +294,17 @@ pub fn board(
                 Transform::from_translation(player.1.translation + Vec3::Y * 600.0).looking_to(-fwd, Vec3::Y)
             } else { first.starts[tod.0 as usize] };
             let speed = if first.boarded { 7.0 } else { 2.5 };
+            let mut plane = Plane::new(pose, speed);
+            if !first.boarded { plane.flight = 0.0; plane.water_strength = 1.0; plane.water_release = 1.0; }
             first.boarded = true;
             commands
                 .spawn((
-                    Plane::new(pose, speed),
+                    plane,
                     pose,
                     Visibility::default(),
                 ))
                 .with_children(|p| {
-                    p.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(model_path(save.plane)))), PlaneModel)).observe(attach_propeller).observe(mark_paint);
+                    p.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(model_path(save.plane)))), PlaneModel)).observe(attach_propeller).observe(mark_paint).observe(attach_animation);
                 });
             *player.2 = Visibility::Hidden;
             next.set(Mode::Fly);
@@ -271,6 +317,24 @@ pub fn board(
             }
             next.set(Mode::Walk);
         }
+    }
+}
+
+fn attach_animation(ev: On<WorldInstanceReady>, children: Query<&Children>, mut players: Query<&mut AnimationPlayer>, plane: Single<&Plane>, save: Res<Save>, assets: Res<AssetServer>, mut graphs: ResMut<Assets<AnimationGraph>>, mut commands: Commands) {
+    let (graph,nodes) = AnimationGraph::from_clips([0,3].map(|i| assets.load(GltfAssetLabel::Animation(i).from_asset(model_path(save.plane)))));
+    let graph = graphs.add(graph);
+    let water = plane.water_strength>0.1;
+    for child in children.iter_descendants(ev.entity) {
+        if let Ok(mut player) = players.get_mut(child) {
+            player.play(nodes[if water {0} else {1}]);
+            commands.entity(child).insert((AnimationGraphHandle(graph.clone()), PlaneAnimation {nodes:nodes.clone(),water}));
+        }
+    }
+}
+fn animate(plane: Single<&Plane>, mut players: Query<(&mut AnimationPlayer, &mut PlaneAnimation)>) {
+    let water = plane.water_strength>0.1 &&plane.water_release>0.1;
+    for (mut player,mut animation) in &mut players {
+        if animation.water != water { animation.water = water; player.start(animation.nodes[if water {0} else {1}]); }
     }
 }
 
@@ -318,10 +382,16 @@ fn despawn_plane(mut commands: Commands, planes: Query<Entity, With<Plane>>) {
 }
 
 /// The propeller is a separate model mounted on the `propeller_point` bone.
-fn attach_propeller(ev: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, mut commands: Commands, assets: Res<AssetServer>) {
+fn attach_propeller(ev: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     for e in children.iter_descendants(ev.entity) {
         if names.get(e).is_ok_and(|n| n.as_str() == "propeller_point") {
             commands.entity(e).with_child((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/propeller.glb"))), Transform::default(), Propeller));
+        }
+        if names.get(e).is_ok_and(|n| n.as_str() == "cockpit") {
+            commands.entity(e).with_children(|c| {
+                c.spawn((Name::new("Seated pilot"), Transform::from_xyz(0.0, -11.0, 0.0).with_scale(Vec3::splat(0.45)), Visibility::default()))
+                    .with_children(|c| crate::player::body(c, &mut meshes, &mut materials, true));
+            });
         }
     }
 }
@@ -342,7 +412,11 @@ fn fly(
     let water = ground.as_ref().filter(|h| h.flags & 0x1f == 6);
     if water.is_some() { p.ground_strength = 0.0; }
     let surface = ground.as_ref().filter(|h| h.flags & 0x1f != 6).map(|h| (h.t, if h.n.y < 0.0 { -h.n } else { h.n }));
-    p.step_with_surface(&mut t, &c, save.invert_pitch, surface);
+    let mut controls = c.clone();
+    controls.stick *= save.flight_sensitivity;
+    let pitch = if save.invert_pitch {-controls.stick.y} else {controls.stick.y};
+    p.water_contact(&mut t, water.map(|h| (h.t, if h.n.y < 0.0 {-h.n} else {h.n}, h.pos.y)), pitch);
+    p.step_with_surface(&mut t, &controls, save.invert_pitch, surface);
 
     // Terrain / sea: crash and bail out with the parachute.
     let step = p.vel;
@@ -355,13 +429,12 @@ fn fly(
         return;
     }
     t.translation += step;
-    // Water contact remains simplified: float at the departure height until
-    // the pilot pitches up, rather than continually accelerating upward.
+    // Collision floor is still a plane; animated wave/float contacts remain partial.
     let water_height = water.map_or(5.0, |h| h.pos.y + 5.0);
     if t.translation.y < water_height { t.translation.y = water_height; p.vel.y = p.vel.y.max(0.0); }
 }
 
-fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer>, mut sounds: MessageWriter<crate::sound::Sound>, mut q: Query<(&mut Plane, &Transform)>) {
+fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut sounds: MessageWriter<crate::sound::Sound>, mut q: Query<(&mut Plane, &Transform)>) {
     let Ok((mut p, t)) = q.single_mut() else { return };
     p.gun_cooldown = p.gun_cooldown.saturating_sub(1);
     if c.shoot && p.gun_cooldown == 0 {
@@ -381,11 +454,41 @@ fn guns(mut c: ResMut<Controls>, mut commands: Commands, assets: Res<AssetServer
         c.flare = false;
         sounds.write(crate::sound::Sound::effect("SE_PLN_ILLUM_FLAME_PLAYER_LAUNCH", None));
         commands.spawn((
-            WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("models/signalgun.glb"))),
-            Transform::from_translation(t.translation + Vec3::Y * 10.0).with_scale(Vec3::splat(3.0)),
+            // signalgun.glb is the pilot's pistol, not its projectile. Recreate
+            // the burning signal with a bright core, glow and smoke trail.
+            Mesh3d(meshes.add(Sphere::new(3.0))),
+            Name::new("Signal flare"),
+            MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.75, 0.3), emissive: LinearRgba::new(8.0, 2.5, 0.4, 1.0), unlit: true, ..default() })),
+            Transform::from_translation(t.translation + Vec3::Y * 10.0),
             PointLight { color: Color::srgb(1.0, 0.4, 0.3), intensity: 5.0e8, range: 3000.0, ..default() },
             Flare { vel: p.vel * 0.5 + Vec3::Y * 9.0, life: 360 },
-        ));
+        )).with_child((Mesh3d(meshes.add(Sphere::new(6.0))), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgba(1.0, 0.5, 0.15, 0.16), unlit: true, alpha_mode: AlphaMode::Blend, ..default() })), Transform::default()));
+    }
+}
+
+fn speedometer_spawn(mut commands: Commands) {
+    commands.spawn((Node { position_type: PositionType::Absolute, bottom: px(24), right: px(24), padding: UiRect::all(px(10)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.1, 0.25, 0.7)), Text::new(""), TextFont::from(FontSource::sans_serif()).with_font_size(FontSize::Px(19.0)), TextColor(Color::WHITE), Speedometer));
+}
+fn speedometer(save: Res<Save>, texts: Res<crate::lang::Texts>, planes: Query<&Plane>, mut text: Single<(&mut Text, &mut Visibility), With<Speedometer>>) {
+    let Ok(p) = planes.single() else { *text.1 = Visibility::Hidden; return; };
+    *text.1 = if save.speedometer {Visibility::Inherited} else {Visibility::Hidden};
+    use crate::lang::Ui;
+    text.0.0 = format!("{}: {:.0} {}\n{}: {:.0}%\n{}: {:.0}%", texts.ui(Ui::Speed), p.vel.length()*60.0, texts.ui(Ui::Units), texts.ui(Ui::Engine), p.throttle*100.0, texts.ui(if p.boost_sign >= 0.0 {Ui::Boost} else {Ui::Slow}), p.boost_force*100.0);
+}
+fn flare_visuals(mut commands: Commands, time: Res<Time>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut flares: Query<(&Flare, &Transform, &mut PointLight)>, mut smoke: Query<(Entity, &mut FlareTrail, &mut Transform), Without<Flare>>, mut next: Local<f32>) {
+    *next -= time.delta_secs();
+    let emit = *next <= 0.0;
+    if emit { *next = 0.08; }
+    for (f, t, mut light) in &mut flares {
+        let fade = (f.life as f32 / 60.0).min(1.0);
+        light.intensity = 5.0e8 * fade;
+        if emit {
+            commands.spawn((Mesh3d(meshes.add(Sphere::new(2.0))), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgba(0.8, 0.8, 0.8, 0.18), unlit: true, alpha_mode: AlphaMode::Blend, ..default() })), *t, FlareTrail(1.4)));
+        }
+    }
+    for (e, mut smoke, mut t) in &mut smoke {
+        smoke.0 -= time.delta_secs(); t.scale += Vec3::splat(time.delta_secs()*2.0); t.translation.y += time.delta_secs()*6.0;
+        if smoke.0 <= 0.0 { commands.entity(e).despawn(); }
     }
 }
 
@@ -393,6 +496,7 @@ fn projectiles(
     mut commands: Commands,
     col: Res<Collision>,
     mut shots: MessageWriter<Shot>,
+    mut sounds: MessageWriter<crate::sound::Sound>,
     mut bullets: Query<(Entity, &mut Bullet, &mut Transform), Without<Flare>>,
     mut flares: Query<(Entity, &mut Flare, &mut Transform), Without<Bullet>>,
 ) {
@@ -412,6 +516,7 @@ fn projectiles(
             continue;
         }
         f.life -= 1;
+        if f.life == 300 { sounds.write(crate::sound::Sound::effect("SE_PLN_ILLUM_FLAME_PLAYER_EXPLODE", Some(t.translation))); }
         f.vel *= 0.985;
         f.vel.y -= 0.02;
         t.translation += f.vel;
@@ -490,6 +595,34 @@ fn trails(time: Res<Time>, fixed: Res<Time<Fixed>>, plane: Single<(&Plane, &Tran
 mod tests {
     use super::*;
 
+    #[test]
+    fn water_departure_can_leave_the_surface_under_normal_controls() {
+        let mut pose=Transform::from_xyz(0.0,5.0,0.0);
+        let mut p=Plane::new(pose,2.5); p.flight=0.0; p.water_strength=1.0;
+        let mut highest=pose.translation.y;
+        for frame in 0..600 {
+            let c=Controls {stick:if frame<180 {Vec2::new(0.0,-0.4)} else {Vec2::ZERO},boost:if frame<1 {1.0} else {0.0},..default()};
+            let contact=(pose.translation.y<120.0).then_some((pose.translation.y,Vec3::Y,0.0));
+            p.water_contact(&mut pose,contact,c.stick.y);
+            p.step_with_surface(&mut pose,&c,false,None);
+            pose.translation+=p.vel;
+            if pose.translation.y<5.0 {pose.translation.y=5.0;p.vel.y=p.vel.y.max(0.0);}
+            highest=highest.max(pose.translation.y);
+        }
+        assert!(highest>30.0,"boost and pull-back must take off; highest={highest}");
+    }
+    #[test]
+    fn water_release_and_damping_match_the_recovered_bands() {
+        let mut pose = Transform::from_xyz(0.0,5.0,0.0);
+        let mut p = Plane::new(pose,3.0); p.water_strength=1.0;
+        p.vel = Vec3::new(2.0,-1.0,3.0);
+        p.water_contact(&mut pose,Some((5.0,Vec3::Y,0.0)),0.0);
+        assert!((p.vel.x-1.0).abs()<1e-5 && (p.vel.y+0.9).abs()<1e-5);
+        let contact=p.water_strength;
+        for _ in 0..60 {p.water_contact(&mut pose,None,-1.0);}
+        assert!(p.water_strength<contact*0.1,"pulling up away from contact releases the floats");
+        assert!(pose.rotation.is_finite() && (pose.rotation.length()-1.0).abs()<1e-5);
+    }
     #[test]
     fn ground_assistance_uses_surface_alignment_and_clearance() {
         let controls = Controls::default();

@@ -21,7 +21,7 @@ const MAX_SECS: f32 = 20.0;
 type Pcm = (Vec<f32>, u16, u32, bool);
 
 fn wanted(name: &str) -> bool {
-    name.starts_with("SE_PLN_") || name.starts_with("SE_CMN_") || name.starts_with("STM_PLN_")
+    name.starts_with("SE_PLN_") || name.starts_with("SE_CMN_") || name.starts_with("STM_PLN_") || name == "STM_TITLE"
 }
 
 pub fn extract(disc: &mut Disc, out: &Path) -> Result<()> {
@@ -44,7 +44,20 @@ pub fn extract(disc: &mut Disc, out: &Path) -> Result<()> {
             }
             2 => {
                 let path = format!("Sound/Static/{}", cstr(&sar.d, sar.info_ref(sar.file_info(fid) + 0xC)));
-                Some(brstm(&disc.read(&path)?).with_context(|| path.clone())?)
+                let data = disc.read(&path)?;
+                // Preserve the introduction separately from the stream's loop.
+                if name == "STM_TITLE" {
+                    let head = be32(&data, 0x10) as usize + 8;
+                    let si = head + be32(&data, head + 4) as usize;
+                    let start = be32(&data, si + 8) as usize;
+                    if data[si+1] != 0 && start > 0 {
+                        let mut full = data.clone(); full[si+1] = 0;
+                        let (pcm, channels, rate, _) = brstm(&full)?;
+                        fs::write(out.join("STM_TITLE_intro.wav"), wav(&pcm[..(start*channels as usize).min(pcm.len())], channels, rate))?;
+                        index.insert("STM_TITLE_intro".into(), Value::Bool(false));
+                    }
+                }
+                Some(brstm(&data).with_context(|| path.clone())?)
             }
             3 => {
                 let Some((rwsd, rwar)) = sar.file(fid) else { continue };
@@ -195,6 +208,9 @@ struct Voice<'a> {
     release: f32,
     off_at: Option<u64>,
     done: bool,
+    track: usize,
+    pan: f32,
+    base_step: f64,
 }
 
 /// NW4R-like decay/release rate in dB per output sample.
@@ -225,6 +241,8 @@ impl<'a> Voice<'a> {
             release: rate_db(adsr[3]),
             off_at: None,
             done: false,
+            track: 0, pan: 0.0,
+            base_step: (2f32.powf(semis / 12.0) * tune * wave.rate / RATE as f32) as f64,
         }
     }
 
@@ -298,6 +316,7 @@ struct Track {
     transpose: i32,
     bend: f32,
     bend_range: f32,
+    pan: f32,
     prg: usize,
     note_wait: bool,
     adsr: [Option<u8>; 4],
@@ -318,6 +337,7 @@ impl Track {
             transpose: 0,
             bend: 0.0,
             bend_range: 2.0,
+            pan: 0.0,
             prg: 0,
             note_wait: true,
             adsr: [None; 4],
@@ -344,11 +364,12 @@ struct Seq<'a> {
     d: &'a [u8],
     bank: &'a [u8],
     waves: &'a [Wave],
-    vars: [i32; 16],
+    vars: [i32; 32],
     tempo: f32,
     timebase: f32,
     rng: u32,
     looped: bool,
+    volume: f32,
 }
 
 impl<'a> Seq<'a> {
@@ -378,8 +399,9 @@ impl<'a> Seq<'a> {
     fn var<'t>(&'t mut self, t: &'t mut Track, i: u8) -> &'t mut i32 {
         match i {
             32..48 => &mut t.vars[i as usize - 32],
-            // ponytail: global variables (16..32) are set by game code; they act as locals here.
-            _ => &mut self.vars[i as usize % 16],
+            // ponytail: game-provided global values start at zero; preserve a
+            // separate namespace so they cannot overwrite player variables.
+            _ => &mut self.vars[i as usize % 32],
         }
     }
     /// Reads the last argument of a command, honouring the random/variable prefixes.
@@ -457,6 +479,7 @@ impl<'a> Seq<'a> {
                     let len = self.arg(&mut t, Arg::VarLen, prefix).max(0) as u32;
                     if exec {
                         if let Some(voice) = self.note(&t, cmd as i32, vel) {
+                            let mut voice = voice; voice.track = ti;
                             notes.push(NoteOn { voice, ticks: len });
                         }
                         if t.note_wait {
@@ -501,7 +524,9 @@ impl<'a> Seq<'a> {
                     if exec {
                         match cmd {
                             0xB0 => self.timebase = v.max(1) as f32,
+                            0xC0 => t.pan = (v as f32 - 64.0) / 63.0,
                             0xC1 => t.vol = v as f32 / 127.0,
+                            0xC2 => self.volume = v as f32 / 127.0,
                             0xD5 => t.vol2 = v as f32 / 127.0,
                             0xC3 => t.transpose = v,
                             0xC4 => t.bend = v as f32 / 127.0,
@@ -592,22 +617,24 @@ impl<'a> Seq<'a> {
         let b = self.bank;
         let wave = self.waves.get(be32(b, p) as usize)?;
         let adsr = std::array::from_fn(|i| t.adsr[i].unwrap_or(b[p + 4 + i]));
-        let semis = (key - b[p + 0xC] as i32) as f32 + t.bend * t.bend_range;
-        let gain = (vel as f32 / 127.0).powi(2) * t.vol * t.vol2 * vol_sq(b[p + 0xD]);
-        Some(Voice::new(wave, semis, bef(b, p + 0x10), gain, adsr))
+        let semis = (key - b[p + 0xC] as i32) as f32;
+        let gain = (vel as f32 / 127.0).powi(2) * vol_sq(b[p + 0xD]);
+        let mut voice = Voice::new(wave, semis, bef(b, p + 0x10), gain, adsr);
+        voice.pan = (b[p + 0xE] as f32 - 64.0) / 63.0;
+        Some(voice)
     }
 }
 
-/// Renders a sequence from a label offset to mono PCM.
+/// Renders the original track/instrument panning and live volume/pitch changes.
 fn render_seq(rseq: &[u8], label: usize, rbnk: &[u8], waves: &[Wave], vol: f32, seed: u32) -> Pcm {
     let data = be32(rseq, 0x10) as usize;
     let start = data + be32(rseq, data + 8) as usize;
-    let mut seq = Seq { d: &rseq[start..], bank: rbnk, waves, vars: [0; 16], tempo: 120.0, timebase: 48.0, rng: seed.wrapping_mul(2654435761) | 1, looped: false };
+    let mut seq = Seq { d: &rseq[start..], bank: rbnk, waves, vars: [0; 32], tempo: 120.0, timebase: 48.0, rng: seed.wrapping_mul(2654435761) | 1, looped: false, volume: 1.0 };
     let mut tracks = vec![Track { active: false, ..Track::new(0) }; 16];
     tracks[0] = Track::new(label);
     let (mut voices, mut notes, mut out) = (Vec::<Voice>::new(), vec![], Vec::<f32>::new());
     let mut clock = 0f64;
-    let limit = ((LOOP_SECS + FADE_SECS).max(MAX_SECS) * RATE as f32) as usize;
+    let limit = ((LOOP_SECS + FADE_SECS).max(MAX_SECS) * RATE as f32) as usize * 2;
     while out.len() < limit && (tracks.iter().any(|t| t.active) || !voices.is_empty()) {
         for ti in 0..tracks.len() {
             if tracks[ti].active {
@@ -623,16 +650,24 @@ fn render_seq(rseq: &[u8], label: usize, rbnk: &[u8], waves: &[Wave], vol: f32, 
             t.wait = t.wait.saturating_sub(1);
         }
         clock += tick;
-        while (out.len() as f64) < clock && out.len() < limit {
-            let now = out.len() as u64;
-            out.push(voices.iter_mut().map(|v| v.sample(now)).sum::<f32>() * vol);
+        while (out.len() as f64 / 2.0) < clock && out.len() < limit {
+            let now = out.len() as u64 / 2;
+            let mut sample = [0.0; 2];
+            for v in &mut voices {
+                let t = &tracks[v.track];
+                v.step = v.base_step * 2f64.powf((t.bend * t.bend_range) as f64 / 12.0);
+                let s = v.sample(now) * t.vol * t.vol2 * seq.volume;
+                let pan = stereo_pan(v.pan + t.pan);
+                sample[0] += s * pan[0]; sample[1] += s * pan[1];
+            }
+            out.extend(sample.map(|s| s * vol));
         }
         voices.retain(|v| !v.done);
     }
     let loops = seq.looped || out.len() >= limit;
     if loops {
         // Crossfade the rendered tail into the start so the file loops seamlessly.
-        let (l, f) = ((LOOP_SECS * RATE as f32) as usize, (FADE_SECS * RATE as f32) as usize);
+        let (l, f) = ((LOOP_SECS * RATE as f32) as usize * 2, (FADE_SECS * RATE as f32) as usize * 2);
         out.resize(l + f, 0.0);
         for i in 0..f {
             let w = i as f32 / f as f32;
@@ -640,7 +675,12 @@ fn render_seq(rseq: &[u8], label: usize, rbnk: &[u8], waves: &[Wave], vol: f32, 
         }
         out.truncate(l);
     }
-    (out, 1, RATE, loops)
+    (out, 2, RATE, loops)
+}
+
+fn stereo_pan(pan: f32) -> [f32; 2] {
+    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+    [angle.cos(), angle.sin()]
 }
 
 /// Decodes a BRSTM (ADPCM or PCM16, first two channels).
@@ -699,6 +739,12 @@ fn wav(pcm: &[f32], channels: u16, rate: u32) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn sequence_pan_has_equal_power_and_hard_left_right_endpoints() {
+        assert_eq!(stereo_pan(-1.0),[1.0,0.0]);
+        assert!(stereo_pan(1.0)[0].abs()<1e-6);
+        for pan in [-1.0,-0.5,0.0,0.5,1.0] { let [l,r]=stereo_pan(pan); assert!((l*l+r*r-1.0).abs()<1e-6); }
+    }
     #[test]
     fn adpcm_silence_and_wav_header() {
         // Zero frames decode to silence; the WAV header carries the stated format.

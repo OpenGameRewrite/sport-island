@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-#[derive(Resource, Serialize, Deserialize, Default, Clone)]
+#[derive(Resource, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Save {
     /// BMG language code (EN, FR, GE, SP, IT); None until chosen on the title screen.
@@ -20,6 +20,16 @@ pub struct Save {
     /// Only overrides; absent entries keep the published defaults.
     pub bindings: std::collections::BTreeMap<String, [String; 2]>,
     pub livery: u8,
+    pub flight_sensitivity: f32,
+    pub look_sensitivity: f32,
+    pub speedometer: bool,
+}
+
+impl Default for Save {
+    fn default() -> Self {
+        Self { lang: None, collected: BTreeSet::new(), time: 0, plane: 0, invert_pitch: false,
+            bindings: Default::default(), livery: 0, flight_sensitivity: 1.0, look_sensitivity: 1.0, speedometer: false }
+    }
 }
 
 fn path() -> PathBuf {
@@ -53,6 +63,9 @@ pub fn plugin(app: &mut App) {
     save.time = save.time.min(2);
     save.plane = save.plane.min(1);
     save.livery = save.livery.min(2);
+    for v in [&mut save.flight_sensitivity, &mut save.look_sensitivity] {
+        *v = if v.is_finite() { v.clamp(0.25, 1.5) } else { 1.0 };
+    }
     save.collected.retain(|i| (*i as usize) < crate::ipoint::READINGS);
     app.insert_resource::<Save>(save);
 }
@@ -62,6 +75,9 @@ mod tests {
     use super::*;
     #[test]
     fn save_can_replace_an_existing_file_and_keep_readings() {
+        let old: Save = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.flight_sensitivity, 1.0);
+        assert_eq!(old.look_sensitivity, 1.0);
         let p = std::env::temp_dir().join(format!("sport-island-save-{}.json", std::process::id()));
         let mut save = Save::default();
         save.write_to(&p).unwrap();
@@ -69,6 +85,8 @@ mod tests {
         save.lang = Some("SP".into());
         save.plane = 1;
         save.livery = 1;
+        save.flight_sensitivity = 0.6;
+        save.speedometer = true;
         save.bindings.insert("Board / eject".into(), ["KeyQ".into(), "RightThumb".into()]);
         save.write_to(&p).unwrap();
         let read: Save = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
@@ -76,6 +94,8 @@ mod tests {
         assert_eq!(read.lang, save.lang);
         assert_eq!(read.plane, 1);
         assert_eq!(read.livery, 1);
+        assert_eq!(read.flight_sensitivity, 0.6);
+        assert!(read.speedometer);
         assert_eq!(read.bindings, save.bindings);
         std::fs::remove_file(p).unwrap();
     }

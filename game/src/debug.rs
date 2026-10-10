@@ -5,8 +5,8 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 pub fn plugin(app: &mut App) {
-    if std::env::var("SI_CONTROLS").is_ok() {
-        app.add_systems(PostStartup, crate::menu::preview_controls);
+    if std::env::var("SI_CONTROLS").is_ok() || std::env::var("SI_MENU").is_ok() {
+        app.add_systems(Update, crate::menu::preview_controls);
     }
     if std::env::var("SI_SMOKE").is_ok() {
         app.add_systems(PreUpdate, smoke.after(crate::input::read).before(crate::menu::pause_input));
@@ -38,20 +38,25 @@ fn smoke(
     mut c: ResMut<crate::input::Controls>, mut phase: Local<u8>, mut paused_at: Local<Option<Vec3>>, mut boarded_at: Local<f32>,
     plane: Query<&Transform, With<crate::plane::Plane>>, menu: Res<crate::menu::Menu>,
     markers: Query<&crate::ipoint::Marker>,
+    names: Query<&Name>,
 ) {
     assert!(std::env::var_os("SI_SAVE").is_some(), "SI_SMOKE requires SI_SAVE to protect real progress");
     let now = time.elapsed_secs();
     match *phase {
-        0 if now > 2.0 => { c.down = true; *phase = 1; }
+        0 if now > 2.0 => { *phase = 1; }
         1 if now > 3.0 => { c.confirm = true; *phase = 2; }
         2 if *state.get() == crate::AppState::Play && now > 5.0 => { assert_eq!(markers.iter().count(), 80, "all sightseeing points must spawn"); c.board = true; *boarded_at = now; *phase = 3; }
         3 if *mode.get() == crate::Mode::Fly => {
             // Pull back briefly to take off from water through normal input.
-            if now < *boarded_at + 0.45 { c.stick.y = -0.25; }
+            if now < *boarded_at + 2.0 { c.stick.y = -0.4; }
             c.shoot = true;
             if now > 7.0 { c.flare = true; *phase = 4; }
         }
-        4 if now > 9.0 => { c.pause = true; *paused_at = plane.single().ok().map(|t| t.translation); *phase = 5; }
+        4 if now > 9.0 => {
+            assert!(names.iter().any(|n| n.as_str()=="Seated pilot"), "cockpit pilot did not spawn");
+            assert!(names.iter().any(|n| n.as_str()=="Signal flare"), "signal flare did not spawn");
+            c.pause = true; *paused_at = plane.single().ok().map(|t| t.translation); *phase = 5;
+        }
         5 => {
             if menu.open && let Some(pos) = *paused_at { assert_eq!(plane.single().unwrap().translation, pos, "plane moved while paused"); }
             if now > 12.0 { c.pause = true; *phase = 6; }
@@ -63,7 +68,7 @@ fn smoke(
             c.time = true;
             *phase = 8;
         }
-        8 if now > 17.0 => { info!("SI_SMOKE passed: language, play, board, gun, flare, pause/resume, eject, time change"); *phase = 9; }
+        8 if now > 17.0 => { info!("SI_SMOKE passed: play, board, cockpit pilot, gun, flare, pause/resume, eject, time change"); *phase = 9; }
         _ => {}
     }
 }
@@ -85,7 +90,7 @@ fn place_camera(mut cam: Query<&mut Transform, With<Camera3d>>) {
     }
 }
 
-fn shoot(mut commands: Commands, time: Res<Time>, mut done: Local<u8>, mut exit: MessageWriter<AppExit>) {
+fn shoot(mut commands: Commands, time: Res<Time<Real>>, mut done: Local<u8>, mut exit: MessageWriter<AppExit>) {
     let wait: f32 = std::env::var("SI_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0);
     let t = time.elapsed_secs();
     if *done == 0 && t > wait {

@@ -139,11 +139,12 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>,
     let font = TextFont::from(FontSource::sans_serif());
     commands.spawn((Node { position_type: PositionType::Absolute, left: percent(4), bottom: px(8), ..default() }, Text::new(""), font.clone().with_font_size(FontSize::Px(18.0)), TextColor(Color::WHITE), BoardHint, DespawnOnExit(AppState::Play)));
     commands.spawn((
+        bevy::ui_widgets::Button, crate::menu::RecordButton,
         Node { position_type: PositionType::Absolute, right: px(24), top: px(20), padding: UiRect::axes(px(14), px(6)), border_radius: BorderRadius::all(px(12)), ..default() },
         BackgroundColor(Color::srgba(0.0, 0.1, 0.25, 0.55)),
         DespawnOnExit(AppState::Play),
         children![(Text::new(""), font.clone().with_font_size(FontSize::Px(26.0)), TextColor(Color::WHITE), Counter)],
-    ));
+    )).observe(crate::menu::record_click);
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
