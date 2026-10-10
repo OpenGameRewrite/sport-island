@@ -63,7 +63,40 @@ pub fn plugin(app: &mut App) {
     if !available() { return; }
     app.init_resource::<Scrolling>()
         .add_systems(OnEnter(AppState::Play), spawn)
-        .add_systems(Update, (convert_materials, follow_path, spin, scroll));
+        .add_systems(Update, (convert_materials, follow_path, spin, scroll))
+        .add_systems(FixedPostUpdate, boost_gates);
+}
+
+#[derive(Component)]
+struct BoostGate { center: Vec3, normal: Vec3, radius: f32 }
+
+/// Speed added by flying through the Boost Gate, metres per second.
+const GATE_BOOST: f32 = 25.0;
+
+/// Flying through a Boost Gate's opening throws the aircraft forward.
+fn boost_gates(
+    gates: Query<&BoostGate>,
+    mut last: Local<Option<Vec3>>,
+    mut flying: Query<(&Transform, Option<&mut crate::plane::Plane>, Option<&mut crate::vehicles::Vehicle>), With<crate::plane::Flying>>,
+) {
+    let Ok((t, plane, vehicle)) = flying.single_mut() else { *last = None; return };
+    let now = t.translation;
+    let Some(before) = last.replace(now) else { return };
+    let through = gates.iter().any(|g| {
+        let (a, b) = ((before - g.center).dot(g.normal), (now - g.center).dot(g.normal));
+        if a.signum() == b.signum() { return false; }
+        let cross = before.lerp(now, a / (a - b));
+        cross.distance(g.center) < g.radius
+    });
+    if !through { return; }
+    if let Some(mut p) = plane {
+        // Wii units per frame along the nose.
+        let nose = t.rotation * Vec3::Z;
+        p.vel += nose * GATE_BOOST * SCALE / 60.0;
+    } else if let Some(mut v) = vehicle {
+        let forward = v.body.rot * Vec3::Z;
+        v.body.vel += forward * GATE_BOOST;
+    }
 }
 
 /// Materials whose texture drifts (`tex_anim_u/v`, texture widths per second).
@@ -104,7 +137,9 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>,
             spawn_blimp(&mut commands, &assets, &points, t, name);
             continue;
         }
-        commands.spawn((model(&assets, name), t, Visibility::default(), PwrObject, DespawnOnExit(AppState::Play)));
+        let mut e = commands.spawn((model(&assets, name), t, Visibility::default(), PwrObject, DespawnOnExit(AppState::Play)));
+        // The ring spans the model's XY plane; its opening is about 6 m across the middle.
+        if kind == "turbo_ring" { e.insert(BoostGate { center: t.translation, normal: t.rotation * Vec3::Z, radius: 6.0 * SCALE }); }
     }
 }
 

@@ -52,6 +52,30 @@ to `SportIsland/save.json` in your system's application-data folder.
 Switching apps or opening Windows capture tools pauses play and releases the
 mouse. Select **Resume** to continue.
 
+## Optional: Pilotwings Resort add-on
+
+With your own **decrypted** dump of Pilotwings Resort (3DS, Europe), run the
+extractor a second time on it, into the same `assets` folder:
+
+```sh
+cargo run --release --locked -j 2 -p sport-island-extract -- "path/to/Pilotwings Resort.3ds" assets
+```
+
+The game works the same without it. With it, the aircraft choice adds the
+3DS vehicles, painted in any of the 12 Mii favourite colours (**Livery**):
+
+| Vehicle | Flight | Controls beyond steering |
+|---|---|---|
+| Plane, Turbo Jet | The Wii plane's physics with the 3DS models | Jet: hold RT / Shift to burn the turbo meter |
+| Hang Glider | The 3DS glider: ride thermals (the swirling columns) to climb | LT / Ctrl or B / C: brake |
+| Pedal Glider | Hang glider plus pedals | Tap RT / Shift (or A / Space) to pedal; pedalling too fast drains the hearts |
+| Rocket Belt, Super Rocket Belt | The 3DS jets; the pilot stays upright and turns on the spot | RT / Shift: full jets, A / Space: light throttle, LT / Ctrl: air brake; the stick leans the jets |
+
+The island also gains the 3DS landing pads, landing strips, the Boost Gate
+(fly through it for a burst of speed), the landing-pad blimp and the i-points
+Pilotwings Resort added. Shared i-points keep the Wii wording; build with
+`--features pwr-text` to read the 3DS wording instead.
+
 ## Work in progress
 
 Original scenery, messages and sounds come from your disc. Flight behavior is

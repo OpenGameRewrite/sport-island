@@ -280,7 +280,8 @@ pub fn plugin(app: &mut App) {
         .add_systems(Update, board.before(crate::plane::board).run_if(crate::menu::playing))
         .add_systems(FixedUpdate, fly.run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
         .add_systems(Update, camera.run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
-        .add_systems(OnEnter(AppState::Play), spawn_thermals)
+        .add_systems(OnEnter(AppState::Play), (spawn_thermals, spawn_gauge))
+        .add_systems(Update, gauge)
         .add_systems(Update, show_thermals)
         .add_systems(OnExit(Mode::Fly), despawn)
         .add_systems(OnExit(AppState::Play), despawn);
@@ -439,6 +440,36 @@ fn camera(
 
 #[derive(Component)]
 struct ThermalColumn;
+
+#[derive(Component)]
+struct Gauge;
+
+fn spawn_gauge(mut commands: Commands, font: Res<crate::lang::UiFont>) {
+    commands.spawn((
+        Node { position_type: PositionType::Absolute, top: px(20), left: percent(4), padding: UiRect::axes(px(16), px(6)), border: UiRect::all(px(3)), border_radius: BorderRadius::all(px(16)), ..default() },
+        BackgroundColor(crate::menu::PANEL), BorderColor::all(crate::menu::OUTLINE),
+        Text::new(""), TextFont::from(font.0.clone()).with_font_size(FontSize::Px(24.0)), TextColor(crate::menu::INK),
+        Visibility::Hidden, Gauge, DespawnOnExit(AppState::Play),
+    ));
+}
+
+/// Pedal glider stamina as five hearts (as the 3DS game shows it) and the
+/// Turbo Jet's turbo meter.
+fn gauge(vehicles: Query<&Vehicle>, planes: Query<&crate::plane::Plane>, mut q: Single<(&mut Text, &mut Visibility, &mut TextColor), With<Gauge>>) {
+    let (text, vis, color) = &mut *q;
+    let bar = |filled: usize, full: char, empty: char| (0..5).map(|i| if i < filled { full } else { empty }).collect::<String>();
+    let shown = if let Some(v) = vehicles.iter().find(|v| v.kind == Kind::PGlider) {
+        **color = TextColor(if v.pedal.exhausted { Color::srgb(0.6, 0.6, 0.65) } else { Color::srgb(0.85, 0.15, 0.3) });
+        Some(bar((v.pedal.stamina * 5.0).ceil() as usize, '♥', '♡'))
+    } else if let Some(p) = planes.iter().find(|p| p.jet) {
+        **color = TextColor(crate::menu::INK);
+        Some(format!("TURBO {}", bar((p.turbo * 5.0).ceil() as usize, '■', '□')))
+    } else {
+        None
+    };
+    **vis = if shown.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+    if let Some(s) = shown { text.set_if_neq(Text::new(s)); }
+}
 
 /// The 3DS game's thermal column model, stretched over each thermal.
 fn spawn_thermals(mut commands: Commands, assets: Res<AssetServer>, thermals: Res<Thermals>, existing: Query<(), With<ThermalColumn>>) {
