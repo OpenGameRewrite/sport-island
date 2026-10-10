@@ -16,7 +16,9 @@ pub struct Menu { pub open: bool, page: Page, sel: usize, scroll: usize, capturi
 #[derive(Default, PartialEq, Clone, Copy)]
 enum Page { #[default] Main, Record, Controls, Settings }
 #[derive(Component)] struct MenuRoot;
+#[derive(Component)] struct MenuPanel;
 #[derive(Component)] struct MenuLine(usize);
+#[derive(Component)] struct MenuValue(usize);
 #[derive(Component)] struct MenuHeader;
 #[derive(Component)] struct MenuHelp;
 #[derive(Component)] struct Item(usize);
@@ -65,18 +67,51 @@ fn cursor(menu: Res<Menu>, state: Res<State<AppState>>, keys: Res<ButtonInput<Ke
     let grab = if active { CursorGrabMode::Confined } else { CursorGrabMode::None };
     if window.1.grab_mode != grab { window.1.grab_mode = grab; }
 }
+// Theme after the Wii Sports Resort menus (colours only, no original art): an
+// off-white panel, a sky-blue title banner, white rounded buttons with a grey
+// outline, and a thick cyan outline that grows the selected button.
+pub(crate) const PANEL: Color = Color::srgba(0.95, 0.96, 0.97, 0.94);
+pub(crate) const INK: Color = Color::srgb(0.24, 0.24, 0.27);
+pub(crate) const ACCENT: Color = Color::srgb(0.0, 0.6, 0.95);
+const BUTTON: Color = Color::WHITE;
+pub(crate) const OUTLINE: Color = Color::srgb(0.78, 0.8, 0.84);
+const HOVER: Color = Color::srgb(0.55, 0.8, 0.97);
+const SELECTED: Color = Color::srgb(0.9, 0.96, 1.0);
+const HINT: Color = Color::srgb(0.45, 0.47, 0.52);
+
 fn spawn_ui(mut commands: Commands, font: Res<crate::lang::UiFont>) {
     let font = TextFont::from(font.0.clone());
-    commands.spawn((Node { position_type: PositionType::Absolute, left: percent(20), right: percent(20), top: percent(5), padding: UiRect::all(px(20)), flex_direction: FlexDirection::Column, row_gap: px(3), border_radius: BorderRadius::all(px(18)), ..default() }, BackgroundColor(Color::srgba(0.02, 0.12, 0.3, 0.9)), GlobalZIndex(10), MenuRoot)).with_children(|p| {
-        p.spawn((Text::new(""), font.clone().with_font_size(FontSize::Px(32.0)), TextColor(Color::WHITE), MenuHeader));
-        for i in 0..LINES {
-            p.spawn((Button, Hovered::default(), Item(i), Node { padding: UiRect::axes(px(10), px(3)), border_radius: BorderRadius::all(px(6)), ..default() }, BackgroundColor(Color::NONE))).observe(click).with_child((Text::new(""), font.clone().with_font_size(FontSize::Px(22.0)), TextColor(Color::WHITE), MenuLine(i)));
-        }
-        p.spawn((Text::new(""), font.clone().with_font_size(FontSize::Px(15.0)), TextColor(Color::srgb(0.65, 0.8, 0.95)), MenuHelp));
-        p.spawn(Node { column_gap: px(14), justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|p| {
-            for (step, label) in [(-1, "◀"), (0, ""), (1, "▶")] {
-                p.spawn((Button, Footer(step), Node { padding: UiRect::axes(px(22), px(6)), border_radius: BorderRadius::all(px(8)), ..default() }, BackgroundColor(Color::srgb(0.1, 0.25, 0.45)))).observe(click).with_child((Text::new(label), font.clone().with_font_size(FontSize::Px(22.0)), TextColor(Color::WHITE)));
+    let overlay = Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() };
+    let button = |padding: UiRect| Node { padding, border: UiRect::all(px(3)), border_radius: BorderRadius::all(px(16)), justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, column_gap: px(16), ..default() };
+    commands.spawn((overlay, GlobalZIndex(10), MenuRoot)).with_children(|p| {
+        p.spawn((
+            Node { width: px(640), max_width: percent(92), max_height: percent(94), padding: UiRect::new(px(26), px(26), px(0), px(20)), flex_direction: FlexDirection::Column, row_gap: px(8), border_radius: BorderRadius::all(px(28)), overflow: Overflow::clip(), ..default() },
+            BackgroundColor(PANEL),
+            BoxShadow::new(Color::srgba(0.0, 0.15, 0.3, 0.35), px(0), px(10), px(0), px(30)),
+            MenuPanel,
+        )).with_children(|p| {
+            // Title banner across the top of the panel.
+            p.spawn((Node { margin: UiRect::new(px(-26), px(-26), px(0), px(10)), padding: UiRect::axes(px(24), px(14)), justify_content: JustifyContent::Center, border_radius: BorderRadius::top(px(28)), ..default() }, BackgroundColor(ACCENT)))
+                .with_child((Text::new(""), font.clone().with_font_size(FontSize::Px(34.0)), TextColor(Color::WHITE), TextLayout::justify(Justify::Center), MenuHeader));
+            for i in 0..LINES {
+                p.spawn((Button, Hovered::default(), Item(i), button(UiRect::axes(px(20), px(8))), BackgroundColor(BUTTON), BorderColor::all(OUTLINE), UiTransform::default()))
+                    .observe(click)
+                    .with_children(|p| {
+                        p.spawn((Text::new(""), font.clone().with_font_size(FontSize::Px(22.0)), TextColor(INK), MenuLine(i)));
+                        p.spawn((Text::new(""), font.clone().with_font_size(FontSize::Px(22.0)), TextColor(ACCENT), MenuValue(i)));
+                    });
             }
+            p.spawn((Text::new(""), font.clone().with_font_size(FontSize::Px(15.0)), TextColor(HINT), TextLayout::justify(Justify::Center), Node { margin: UiRect::top(px(6)), ..default() }, MenuHelp));
+            // Back on the left, record paging on the right, as in Wii menus.
+            p.spawn(Node { column_gap: px(10), align_items: AlignItems::Center, margin: UiRect::top(px(4)), ..default() }).with_children(|p| {
+                for (step, label) in [(0, ""), (-1, "‹"), (1, "›")] {
+                    let mut node = button(UiRect::axes(px(if step == 0 {28} else {18}), px(6)));
+                    if step == -1 { node.margin = UiRect::left(Val::Auto); }
+                    p.spawn((Button, Hovered::default(), Footer(step), node, BackgroundColor(BUTTON), BorderColor::all(OUTLINE)))
+                        .observe(click)
+                        .with_child((Text::new(label), font.clone().with_font_size(FontSize::Px(20.0)), TextColor(INK)));
+                }
+            });
         });
     });
 }
@@ -85,12 +120,9 @@ fn click(event: On<Activate>, items: Query<&Item>, footers: Query<&Footer>, mut 
     if let Ok(footer) = footers.get(event.entity) { clicks.write(Click::Step(footer.0)); }
 }
 pub fn record_click(_: On<Activate>, mut clicks: MessageWriter<Click>) { clicks.write(Click::Record); }
-fn mouse_input(mut m: ResMut<Menu>, mut c: ResMut<Controls>, mut items: Query<(&Hovered, &mut BackgroundColor), With<Item>>, mut clicks: MessageReader<Click>, wheel: Res<AccumulatedMouseScroll>) {
+fn mouse_input(mut m: ResMut<Menu>, mut c: ResMut<Controls>, mut clicks: MessageReader<Click>, wheel: Res<AccumulatedMouseScroll>) {
     let clicks: Vec<_> = clicks.read().collect();
     if !m.open || m.capturing { return; }
-    for (hovered, mut color) in &mut items {
-        color.0 = if !hovered.get() { Color::NONE } else { Color::srgba(0.2, 0.45, 0.7, 0.5) };
-    }
     for click in clicks {
         match *click {
             Click::Row(i) if m.page != Page::Record => { m.sel = i; c.confirm = true; }
@@ -193,60 +225,114 @@ fn controls_input(mut m: ResMut<Menu>, mut c: ResMut<Controls>, mut save: ResMut
     }
     c.confirm = false; c.shoot = false; c.board = false; c.flare = false; c.jump = false;
 }
+/// A changeable value between chevrons.
+fn choice(v: impl std::fmt::Display) -> String { format!("‹  {v}  ›") }
+
 #[allow(clippy::too_many_arguments)]
-fn render(m: Res<Menu>, state: Res<State<AppState>>, texts: Res<Texts>, langs: Res<Languages>, save: Res<Save>, tod: Res<TimeOfDay>, points: Res<IPoints>, c: Res<Controls>, window: Single<&Window>, mut root: Single<(&mut Visibility, &mut Node), (With<MenuRoot>, Without<Item>)>, mut header: Single<(&mut Text, &mut TextFont), (With<MenuHeader>, Without<MenuLine>, Without<MenuHelp>)>, mut help: Single<&mut Text, (With<MenuHelp>, Without<MenuHeader>, Without<MenuLine>)>, mut lines: Query<(&MenuLine, &mut Text, &mut TextColor, &mut TextFont), (Without<MenuHeader>, Without<MenuHelp>)>, mut items: Query<(&Item, &mut Node), Without<MenuRoot>>, footers: Query<(&Footer, &Children)>, mut footer_texts: Query<&mut Text, (Without<MenuHeader>, Without<MenuLine>, Without<MenuHelp>)>) {
-    *root.0 = if m.open {Visibility::Inherited} else {Visibility::Hidden};
-    let margin = if m.page == Page::Controls || m.page == Page::Record {10.0} else {20.0}; root.1.left = percent(margin); root.1.right = percent(margin);
+fn render(
+    (m, state, texts, langs, save, tod, points, c): (Res<Menu>, Res<State<AppState>>, Res<Texts>, Res<Languages>, Res<Save>, Res<TimeOfDay>, Res<IPoints>, Res<Controls>),
+    window: Single<&Window>,
+    mut root: Single<&mut Visibility, With<MenuRoot>>,
+    mut panel: Single<&mut Node, (With<MenuPanel>, Without<Item>, Without<Footer>)>,
+    mut header: Single<(&mut Text, &mut TextFont), (With<MenuHeader>, Without<MenuLine>, Without<MenuValue>, Without<MenuHelp>)>,
+    mut help: Single<&mut Text, (With<MenuHelp>, Without<MenuHeader>, Without<MenuLine>, Without<MenuValue>)>,
+    mut labels: Query<(&MenuLine, &mut Text, &mut TextFont), (Without<MenuHeader>, Without<MenuHelp>, Without<MenuValue>)>,
+    mut values: Query<(&MenuValue, &mut Text, &mut TextFont), (Without<MenuHeader>, Without<MenuHelp>, Without<MenuLine>)>,
+    mut items: Query<(&Item, &Hovered, &mut Node, &mut BackgroundColor, &mut BorderColor, &mut UiTransform), (Without<MenuPanel>, Without<Footer>)>,
+    mut footers: Query<(&Footer, &Hovered, &Children, &mut Node, &mut BorderColor), (Without<MenuPanel>, Without<Item>)>,
+    mut footer_texts: Query<&mut Text, (Without<MenuHeader>, Without<MenuLine>, Without<MenuValue>, Without<MenuHelp>)>,
+) {
+    **root = if m.open {Visibility::Inherited} else {Visibility::Hidden};
     if !m.open { return; }
+    let wide = m.page == Page::Controls || m.page == Page::Record;
+    let width = px(if wide {900} else {640});
+    if panel.width != width { panel.width = width; }
+    let title = *state.get() == AppState::Title;
     let onoff = |b| texts.ui(if b {Ui::On} else {Ui::Off});
     let mut selected = Some(m.sel);
-    let rows: Vec<String> = match m.page {
+    let rows: Vec<(String, String)> = match m.page {
         Page::Controls => {
             header.0.set_if_neq(Text::new(texts.ui(Ui::Controls))); help.set_if_neq(Text::new(texts.ui(Ui::ControlsHint)));
             let mut rows: Vec<_> = (0..crate::input::ACTIONS.len()).map(|i| {
                 let pair = crate::input::binding(&save, i);
-                format!("{}:  {}", texts.action(i), if m.capturing && m.sel == i {texts.ui(Ui::Waiting).into()} else {format!("{} / {}", texts.binding(&pair[0]), texts.binding(&pair[1]))})
-            }).collect(); rows.push(texts.ui(Ui::ResetControls).into()); rows
+                (texts.action(i).to_string(), if m.capturing && m.sel == i {texts.ui(Ui::Waiting).into()} else {format!("{}  /  {}", texts.binding(&pair[0]), texts.binding(&pair[1]))})
+            }).collect();
+            rows.push((texts.ui(Ui::ResetControls).into(), String::new()));
+            rows
         }
         Page::Settings => {
             header.0.set_if_neq(Text::new(texts.ui(Ui::Settings))); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
-            vec![format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::FlightSensitivity), save.flight_sensitivity*100.0), format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::LookSensitivity), save.look_sensitivity*100.0), format!("{}: ◀ {:.0}% ▶", texts.ui(Ui::TurnRecovery), save.turn_recovery*100.0), format!("{}: ◀ {} ▶", texts.ui(Ui::InvertPitch), onoff(save.invert_pitch)), format!("{}: ◀ {} ▶", texts.ui(Ui::Speedometer), onoff(save.speedometer))]
+            vec![
+                (texts.ui(Ui::FlightSensitivity).into(), choice(format!("{:.0}%", save.flight_sensitivity * 100.0))),
+                (texts.ui(Ui::LookSensitivity).into(), choice(format!("{:.0}%", save.look_sensitivity * 100.0))),
+                (texts.ui(Ui::TurnRecovery).into(), choice(format!("{:.0}%", save.turn_recovery * 100.0))),
+                (texts.ui(Ui::InvertPitch).into(), choice(onoff(save.invert_pitch))),
+                (texts.ui(Ui::Speedometer).into(), choice(onoff(save.speedometer))),
+            ]
         }
         Page::Record => {
-            header.0.set_if_neq(Text::new(format!("{} — {} / {}   ({}–{} / 80)", texts.ui(Ui::IPoints), save.collected.len(), READINGS, m.scroll+1, m.scroll+LINES)));
-            help.set_if_neq(Text::new(texts.ui(Ui::RecordHint))); selected = None;
-            (m.scroll..m.scroll+LINES).map(|i| {
-                let mark = |t| if save.collected.contains(&((i*3) as u16+t)) {"●"} else {"○"};
-                let name = if (0..3).any(|t| save.collected.contains(&((i*3) as u16+t))) {texts.msg(name_id(&points.0[i]), c.pad)} else {"?".into()};
-                format!("{:>2}   {} {} {}   {}", i+1, mark(0), mark(1), mark(2), name)
+            header.0.set_if_neq(Text::new(format!("{} — {} / {}", texts.ui(Ui::IPoints), save.collected.len(), READINGS)));
+            help.set_if_neq(Text::new(format!("{}   ({}–{} / 80)", texts.ui(Ui::RecordHint), m.scroll + 1, m.scroll + LINES)));
+            selected = None;
+            (m.scroll..m.scroll + LINES).map(|i| {
+                let mark = |t| if save.collected.contains(&((i * 3) as u16 + t)) {"●"} else {"○"};
+                let name = if (0..3).any(|t| save.collected.contains(&((i * 3) as u16 + t))) {texts.msg(name_id(&points.0[i]), c.pad)} else {"?".into()};
+                (format!("{:>2}.  {}", i + 1, name), format!("{} {} {}", mark(0), mark(1), mark(2)))
             }).collect()
         }
         Page::Main => {
-            let title = *state.get() == AppState::Title;
             header.0.set_if_neq(Text::new("Sport Island")); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
             let lang = langs.0.iter().find(|l| l.code == texts.code).map_or("", |l| l.name.as_str());
             let livery = if save.plane == 0 { [Ui::Red, Ui::White, Ui::Yellow][save.livery.min(2) as usize] } else { [Ui::Orange, Ui::Blue][save.livery.min(1) as usize] };
             (if title {TITLE} else {PAUSE}).iter().map(|row| match row {
-                Row::Start => texts.ui(Ui::Start).into(), Row::Resume => texts.ui(Ui::Resume).into(),
-                Row::Time => format!("{}: ◀ {} ▶", texts.ui(Ui::TimeOfDay), texts.ui([Ui::Day, Ui::Dusk, Ui::Night][tod.0 as usize])),
-                Row::Plane => format!("{}: ◀ {} ▶{}", texts.ui(Ui::Plane), texts.ui(if save.plane == 0 {Ui::Plane1} else {Ui::Plane2}), if title {String::new()} else {format!(" ({})", texts.ui(Ui::NextBoarding))}),
-                Row::Livery => format!("{}: ◀ {} ▶", texts.ui(Ui::Livery), texts.ui(livery)),
-                Row::Controls => texts.ui(Ui::Controls).into(), Row::Settings => texts.ui(Ui::Settings).into(),
-                Row::Language => format!("{}: ◀ {lang} ▶", texts.ui(Ui::Language)),
-                Row::Record => format!("{}: {} / {}", texts.ui(Ui::IPoints), save.collected.len(), READINGS), Row::Quit => texts.ui(Ui::Quit).into(),
+                Row::Start => (texts.ui(Ui::Start).into(), String::new()),
+                Row::Resume => (texts.ui(Ui::Resume).into(), String::new()),
+                Row::Time => (texts.ui(Ui::TimeOfDay).into(), choice(texts.ui([Ui::Day, Ui::Dusk, Ui::Night][tod.0 as usize]))),
+                Row::Plane => (if title {texts.ui(Ui::Plane).into()} else {format!("{} ({})", texts.ui(Ui::Plane), texts.ui(Ui::NextBoarding))}, choice(texts.ui(if save.plane == 0 {Ui::Plane1} else {Ui::Plane2}))),
+                Row::Livery => (texts.ui(Ui::Livery).into(), choice(texts.ui(livery))),
+                Row::Controls => (texts.ui(Ui::Controls).into(), "›".into()),
+                Row::Settings => (texts.ui(Ui::Settings).into(), "›".into()),
+                Row::Language => (texts.ui(Ui::Language).into(), choice(lang)),
+                Row::Record => (texts.ui(Ui::IPoints).into(), format!("{} / {}  ›", save.collected.len(), READINGS)),
+                Row::Quit => (texts.ui(Ui::Quit).into(), String::new()),
             }).collect()
         }
     };
-    let size = FontSize::Px((window.height()*0.038).clamp(20.0, 32.0));
-    if header.1.font_size != size { header.1.font_size = size; }
-    for (l, mut t, mut col, mut font) in &mut lines {
-        t.set_if_neq(Text::new(rows.get(l.0).cloned().unwrap_or_default()));
-        col.set_if_neq(TextColor(if selected == Some(l.0) {Color::srgb(1.0, 0.85, 0.2)} else {Color::WHITE}));
-        let size = FontSize::Px((window.height()*0.026).clamp(14.0, 22.0));
+    let big = FontSize::Px((window.height() * (if title && m.page == Page::Main {0.06} else {0.042})).clamp(24.0, 48.0));
+    if header.1.font_size != big { header.1.font_size = big; }
+    let size = FontSize::Px((window.height() * if wide {0.022} else {0.026}).clamp(14.0, 22.0));
+    for (l, mut t, mut font) in &mut labels {
+        t.set_if_neq(Text::new(rows.get(l.0).map(|r| r.0.clone()).unwrap_or_default()));
         if font.font_size != size { font.font_size = size; }
     }
-    for (item, mut node) in &mut items { node.display = if item.0 < rows.len() {Display::Flex} else {Display::None}; }
-    for (footer, children) in &footers { if footer.0 == 0 { for e in children { if let Ok(mut t) = footer_texts.get_mut(*e) { t.set_if_neq(Text::new(texts.ui(Ui::Back))); } } } }
+    for (v, mut t, mut font) in &mut values {
+        t.set_if_neq(Text::new(rows.get(v.0).map(|r| r.1.clone()).unwrap_or_default()));
+        if font.font_size != size { font.font_size = size; }
+    }
+    let record = m.page == Page::Record;
+    // The long pages (record, controls) use compact rows.
+    let pad = if record {px(2)} else if wide {px(3)} else {px(8)};
+    for (item, hovered, mut node, mut bg, mut border, mut transform) in &mut items {
+        let display = if item.0 < rows.len() {Display::Flex} else {Display::None};
+        if node.display != display { node.display = display; }
+        if node.padding.top != pad { node.padding = UiRect::axes(px(20), pad); }
+        let chosen = selected == Some(item.0);
+        let (fill, line) = if record { (Color::NONE, Color::NONE) } else if chosen { (SELECTED, ACCENT) } else if hovered.get() { (BUTTON, HOVER) } else { (BUTTON, OUTLINE) };
+        bg.set_if_neq(BackgroundColor(fill));
+        border.set_if_neq(BorderColor::all(line));
+        let width = if chosen { px(4) } else { px(3) };
+        if node.border.top != width { node.border = UiRect::all(width); }
+        let scale = Vec2::splat(if chosen { 1.03 } else { 1.0 });
+        if transform.scale != scale { transform.scale = scale; }
+    }
+    // Back everywhere but the title's main page; paging arrows only for the record.
+    for (footer, hovered, children, mut node, mut border) in &mut footers {
+        let shown = if footer.0 == 0 { !(title && m.page == Page::Main) } else { record };
+        let display = if shown {Display::Flex} else {Display::None};
+        if node.display != display { node.display = display; }
+        border.set_if_neq(BorderColor::all(if hovered.get() {HOVER} else {OUTLINE}));
+        if footer.0 == 0 { for e in children { if let Ok(mut t) = footer_texts.get_mut(*e) { t.set_if_neq(Text::new(texts.ui(Ui::Back))); } } }
+    }
 }
 #[cfg(test)]
 mod tests {

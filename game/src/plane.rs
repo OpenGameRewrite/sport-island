@@ -508,7 +508,7 @@ fn tint_bullets(cache: Res<crate::gx::GxMaterials>, mut materials: ResMut<Assets
 }
 
 fn speedometer_spawn(mut commands: Commands, font: Res<crate::lang::UiFont>) {
-    commands.spawn((Node { position_type: PositionType::Absolute, bottom: px(24), right: px(24), padding: UiRect::all(px(10)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.1, 0.25, 0.7)), Text::new(""), TextFont::from(font.0.clone()).with_font_size(FontSize::Px(19.0)), TextColor(Color::WHITE), Speedometer));
+    commands.spawn((Node { position_type: PositionType::Absolute, bottom: px(24), right: px(24), padding: UiRect::axes(px(16), px(10)), border: UiRect::all(px(3)), border_radius: BorderRadius::all(px(16)), ..default() }, BackgroundColor(crate::menu::PANEL), BorderColor::all(crate::menu::OUTLINE), Text::new(""), TextFont::from(font.0.clone()).with_font_size(FontSize::Px(19.0)), TextColor(crate::menu::INK), Speedometer));
 }
 fn speedometer(save: Res<Save>, texts: Res<crate::lang::Texts>, planes: Query<&Plane>, mut text: Single<(&mut Text, &mut Visibility), With<Speedometer>>) {
     let Ok(p) = planes.single() else { *text.1 = Visibility::Hidden; return; };

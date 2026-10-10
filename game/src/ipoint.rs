@@ -140,10 +140,10 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, points: Res<IPoints>,
     commands.spawn((Node { position_type: PositionType::Absolute, left: percent(4), bottom: px(8), ..default() }, Text::new(""), font.clone().with_font_size(FontSize::Px(18.0)), TextColor(Color::WHITE), BoardHint, DespawnOnExit(AppState::Play)));
     commands.spawn((
         bevy::ui_widgets::Button, crate::menu::RecordButton,
-        Node { position_type: PositionType::Absolute, right: px(24), top: px(20), padding: UiRect::axes(px(14), px(6)), border_radius: BorderRadius::all(px(12)), ..default() },
-        BackgroundColor(Color::srgba(0.0, 0.1, 0.25, 0.55)),
+        Node { position_type: PositionType::Absolute, right: px(24), top: px(20), padding: UiRect::axes(px(16), px(5)), border: UiRect::all(px(3)), border_radius: BorderRadius::all(px(999)), ..default() },
+        BackgroundColor(crate::menu::PANEL), BorderColor::all(crate::menu::OUTLINE),
         DespawnOnExit(AppState::Play),
-        children![(Text::new(""), font.clone().with_font_size(FontSize::Px(26.0)), TextColor(Color::WHITE), Counter)],
+        children![(Text::new(""), font.clone().with_font_size(FontSize::Px(26.0)), TextColor(crate::menu::ACCENT), Counter)],
     )).observe(crate::menu::record_click);
     commands.spawn((
         Node {
