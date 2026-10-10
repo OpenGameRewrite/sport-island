@@ -131,7 +131,10 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<As
             0 => ("tree", None, 1.0, None),
             1 => ("tree2", None, 1.0, None),
             2 => ("tree3", None, 1.0, None),
-            3 => ("airship", Some(3), 1.0, Some("SE_CMN_AIR_SHIP")),
+            // The flyover never selects a blimp route; it keeps the title
+            // screen's (clip 4, "_title"). Clip 3 is Swordplay's, which dips
+            // through the volcano where that mode's terrain differs.
+            3 => ("airship", Some(4), 1.0, Some("SE_CMN_AIR_SHIP")),
             4 | 9 | 27 | 28 | 46 => ("cruiser", None, 1.0, Some("SE_CMN_MOVE_CRUISER")),
             10 => ("pole", None, 1.0, None),
             11 | 12 | 18 | 19 => ("flag_a", None, 1.0, None),

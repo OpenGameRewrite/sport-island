@@ -106,6 +106,9 @@ fn main() -> Result<()> {
         let bytes = disc.dol_data(0x8065bfb8, 12 * 4)?;
         let colors: Vec<_> = bytes.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
         write_json(&out.join("data/plane_colors.json"), &json!(colors))?;
+        // Which island sections each game mode shows (the flyover uses two columns).
+        let table = u32::from_be_bytes(disc.dol_data(0x806f132c, 4)?.try_into().unwrap());
+        write_json(&out.join("data/island_visibility.json"), &json!(visibility_table(&disc.dol_data(table, 4096)?)))?;
         let sub = disc.archive("Stage/PlnScene/PlnSub.carc")?;
         for path in ["G3D/WS2_pln_picture.brres", "G3D/WS2_pln_plane.brres", "G3D/WS2_pln_plane02.brres"] {
             let d = sub.get(path).with_context(|| path.to_string())?;
@@ -130,6 +133,27 @@ fn main() -> Result<()> {
     if only.is_none() { fs::write(out.join("VERSION"), format!("{}\n", env!("CARGO_PKG_VERSION")))?; }
     println!("Done. Assets written to {}", out.display());
     Ok(())
+}
+
+/// Rows of `name,○,×,…(18 modes),comment,` with Shift-JIS marks, NUL-terminated.
+fn visibility_table(d: &[u8]) -> std::collections::BTreeMap<String, Vec<bool>> {
+    const ON: &[u8] = &[0x81, 0x9B];
+    const OFF: &[u8] = &[0x81, 0x7E];
+    let text = &d[..d.iter().position(|&b| b == 0).unwrap_or(d.len())];
+    let fields: Vec<&[u8]> = text.split(|&b| b == b',').collect();
+    let mut out = std::collections::BTreeMap::new();
+    let mut i = 0;
+    while i < fields.len() {
+        let marks = fields.get(i + 1..i + 19).filter(|m| m.iter().all(|m| *m == ON || *m == OFF));
+        match marks {
+            Some(marks) if fields[i].first().is_some_and(u8::is_ascii_alphabetic) => {
+                out.insert(String::from_utf8_lossy(fields[i]).into_owned(), marks.iter().map(|m| *m == ON).collect());
+                i += 19;
+            }
+            _ => i += 1,
+        }
+    }
+    out
 }
 
 /// No GUI dependency: ask on stdin when no path is given.
@@ -291,4 +315,21 @@ fn convert(d: &[u8], name: &str) -> Result<(Vec<u8>, Value, Vec<(String, Vec<u8>
         }).collect()
     } else { vec![] };
     Ok((conv.glb, json!({ "materials": conv.info, "srt": srts, "pat": pats, "clr": clrs, "routes": routes, "motion": motion }), swaps))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn visibility_rows_skip_comments() {
+        let (on, off) = ([0x81u8, 0x9B], [0x81u8, 0x7E]);
+        let mut d = b"Island_1_Model".to_vec();
+        for i in 0..18 { d.push(b','); d.extend(if i == 13 { off } else { on }); }
+        d.extend(b",\x82\xa0,Light1");
+        for _ in 0..18 { d.push(b','); d.extend(off); }
+        d.push(0);
+        let t = visibility_table(&d);
+        assert_eq!(t.len(), 2);
+        assert!(!t["Island_1_Model"][13] && t["Island_1_Model"][14] && !t["Light1"][0]);
+    }
 }

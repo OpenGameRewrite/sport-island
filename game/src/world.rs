@@ -32,6 +32,12 @@ struct EnvFile {
 #[derive(Resource)]
 struct Envs(Vec<EnvFile>);
 
+/// The game's per-mode table of island sections (bones) to show, by name.
+/// The flyover uses mode 13 by day and dusk and mode 14 at night; the
+/// sections it hides overlap the ones it shows (e.g. the volcano tunnel).
+#[derive(Resource, Default)]
+struct SectionTable(std::collections::HashMap<String, Vec<bool>>);
+
 /// 0 day, 1 dusk, 2 night (the three Island Flyover settings).
 #[derive(Resource, Clone, Copy, PartialEq)]
 pub struct TimeOfDay(pub u8);
@@ -52,7 +58,11 @@ pub fn rgb(c: [u8; 4]) -> Color { Color::srgb_u8(c[0], c[1], c[2]) }
 pub fn plugin(app: &mut App) {
     let envs = (0..3).map(|i| crate::read_json(&format!("data/env{i}.json"))).collect();
     let time = app.world().resource::<Save>().time.min(2);
+    let table = std::fs::read(crate::asset_dir().join("data/island_visibility.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    if table.is_none() { warn!("data/island_visibility.json missing: run the extractor again to hide overlapping island sections"); }
     app.insert_resource(Envs(envs))
+        .insert_resource(SectionTable(table.unwrap_or_default()))
+        .add_systems(Update, sections)
         .insert_resource(TimeOfDay(time))
         .insert_resource(ClearColor(Color::srgb(0.4, 0.8, 1.0)))
         .add_systems(Startup, setup)
@@ -100,6 +110,16 @@ fn hide_crater_lid(ev: On<bevy::world_serialization::WorldInstanceReady>, childr
         let flat = pos.iter().all(|p| (p[1] - pos[0][1]).abs() < 0.5);
         if flat && col.iter().all(|c| c[0] + c[1] + c[2] == 0.0) {
             commands.entity(e).insert(Visibility::Hidden);
+        }
+    }
+}
+
+fn sections(time: Res<TimeOfDay>, table: Res<SectionTable>, mut nodes: Query<(Ref<Name>, &mut Visibility)>) {
+    let mode = if time.0 == 2 { 14 } else { 13 };
+    for (name, mut vis) in &mut nodes {
+        if !(name.is_added() || time.is_changed()) { continue; }
+        if let Some(show) = table.0.get(name.as_str()).and_then(|row| row.get(mode)) {
+            vis.set_if_neq(if *show { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
 }

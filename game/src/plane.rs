@@ -656,6 +656,8 @@ fn chase_camera(
     col: Res<Collision>,
     mut look: Local<Vec2>,
     mut idle: Local<f32>,
+    mut heading_ref: Local<Vec3>,
+    mut cam_up: Local<Vec3>,
     plane: Single<(&Plane, &Transform)>,
     mut cam: Single<&mut Transform, (With<MainCamera>, Without<Plane>)>,
 ) {
@@ -670,21 +672,42 @@ fn chase_camera(
         if *idle > 4.0 { *look *= (-0.7 * dt).exp(); }
     }
     let nose = t.rotation * Vec3::Z;
-    let pitch = -nose.y.clamp(-1.0, 1.0).asin();
-    let heading = Quat::from_euler(EulerRot::YXZ, nose.x.atan2(nose.z), pitch, 0.0);
-    let fwd = (heading * Quat::from_euler(EulerRot::YXZ, look.x, -look.y, 0.0)) * Vec3::Z;
+    // The camera's heading follows the nose's horizontal direction, which
+    // reverses as the nose passes vertical. Keep the old heading until the
+    // nose is clearly over the top, so climbs and dives near vertical don't
+    // swing the camera (and the felt controls) back and forth.
+    *heading_ref = camera_heading(*heading_ref, nose);
+    let pitch = -nose.y.atan2(nose.dot(*heading_ref));
+    let frame = Quat::from_euler(EulerRot::YXZ, heading_ref.x.atan2(heading_ref.z), pitch, 0.0);
+    let fwd = (frame * Quat::from_euler(EulerRot::YXZ, look.x, -look.y, 0.0)) * Vec3::Z;
+    let up = frame * Vec3::Y;
     let speed_pull = (p.vel.length() / 7.0).clamp(0.5, 2.0);
-    let target = t.translation + Vec3::Y * 20.0;
+    let target = t.translation + up * 20.0;
     let mut dist = 130.0 * speed_pull.sqrt();
-    let dir = (-fwd + Vec3::Y * 0.28).normalize();
+    let dir = (-fwd + up * 0.28).normalize();
     if let Some(h) = col.raycast(target, dir, dist) {
         dist = (h.t - 10.0).max(30.0);
     }
     let want = target + dir * dist;
     let k = 1.0 - (-12.0 * dt).exp();
     cam.translation = cam.translation.lerp(want, k);
-    cam.look_at(target + fwd * 60.0, Vec3::Y);
+    // Roll over smoothly when the heading does flip; aim stays exact.
+    *cam_up = if *cam_up == Vec3::ZERO { up } else { cam_up.lerp(up, 1.0 - (-8.0 * dt).exp()).normalize_or(up) };
+    cam.look_at(target + fwd * 60.0, *cam_up);
 }
+
+/// Horizontal heading the chase camera follows. It keeps the previous heading
+/// while the nose is near vertical and only turns around once the nose is
+/// `FLIP_PAST_VERTICAL` beyond it.
+fn camera_heading(previous: Vec3, nose: Vec3) -> Vec3 {
+    let horizontal = Vec3::new(nose.x, 0.0, nose.z);
+    let over_the_top = previous.dot(horizontal) < 0.0;
+    let needed = if over_the_top { FLIP_PAST_VERTICAL.sin() } else { 0.02 };
+    if previous == Vec3::ZERO || horizontal.length() > needed { horizontal.normalize_or(Vec3::Z) } else { previous }
+}
+
+/// How far past vertical the nose must go before the chase camera turns over.
+const FLIP_PAST_VERTICAL: f32 = 30f32.to_radians();
 
 /// Three short, fading ribbons sampled from the interpolated model pose.
 fn trails(time: Res<Time>, fixed: Res<Time<Fixed>>, plane: Single<(&Plane, &Transform)>, mut history: Local<std::collections::VecDeque<(f32, [Vec3; 3])>>, mut gizmos: Gizmos) {
@@ -708,6 +731,18 @@ fn trails(time: Res<Time>, fixed: Res<Time<Fixed>>, plane: Single<(&Plane, &Tran
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chase_camera_turns_over_only_well_past_vertical() {
+        let climb = |deg: f32| { let a = deg.to_radians(); Vec3::new(0.0, a.sin(), a.cos()) };
+        let mut h = camera_heading(Vec3::ZERO, climb(10.0));
+        assert_eq!(h, Vec3::Z);
+        // Wobbling around vertical keeps the heading.
+        for deg in [85.0, 92.0, 88.0, 105.0, 95.0] { h = camera_heading(h, climb(deg)); assert_eq!(h, Vec3::Z, "{deg}"); }
+        // Well over the top, the camera turns around.
+        h = camera_heading(h, climb(125.0));
+        assert_eq!(h, Vec3::NEG_Z);
+    }
 
     #[test]
     fn water_departure_can_leave_the_surface_under_normal_controls() {
