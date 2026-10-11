@@ -66,14 +66,16 @@ The game works the same without it. With it, the aircraft choice adds the
 
 | Vehicle | Flight | Controls beyond steering |
 |---|---|---|
-| Plane, Turbo Jet | The Wii plane's physics with the 3DS models | Double-tap the stick sideways to barrel-roll; Jet: hold RT / Shift to burn the turbo meter |
+| Plane, Turbo Jet | The 3DS flight model: bank to turn, the plane levels out when you let go | RT / Shift: turbo (2.5 s, then it recharges), LT / Ctrl: brake; LB / Z and RB / X: lean left or right, both: fly upside down, double-tap one: barrel roll |
 | Hang Glider | The 3DS glider: ride thermals (the swirling columns) to climb | LT / Ctrl or B / C: brake |
 | Pedal Glider | Hang glider plus pedals | Tap RT / Shift (or A / Space) to pedal; pedalling too fast drains the hearts |
 | Rocket Belt, Super Rocket Belt | The 3DS jets; the pilot stays upright and turns on the spot | RT / Shift: full jets, A / Space: light throttle, LT / Ctrl: air brake; the stick leans the jets |
 
 Each vehicle uses its 3DS sounds and moving parts: control surfaces, the pedal
 glider's crank and propellers, swivelling rocket nozzles and their flames, and a
-pilot who leans and pedals. The island also gains the 3DS floating landing pads,
+pilot who leans and pedals. Settings → **3DS plane handling** switches the plane and jet to the Wii plane's
+physics (Wii-style) if you prefer that feel; leans and barrel rolls then do
+nothing. The island also gains the 3DS floating landing pads,
 tugboat decks and the cruising landing-pad blimp (all solid: land or walk on
 them, and the blimp carries you along), the Boost Gate (fly through it for a
 burst of speed) and the i-points Pilotwings Resort added.

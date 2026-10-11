@@ -170,7 +170,7 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
     if !title && c.record { m.page = Page::Record; m.scroll = 0; m.direct_record = false; return; }
     if m.page == Page::Settings {
         if c.back || c.pause { m.page = Page::Main; m.sel = 5; return; }
-        navigate(&mut m.sel, 6, &c);
+        navigate(&mut m.sel, if crate::pwr::available() { 7 } else { 6 }, &c);
         let step = c.right as i32 - c.left as i32 + c.confirm as i32;
         if step != 0 {
             match m.sel {
@@ -179,7 +179,8 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
                 2 => save.ground_assist = (save.ground_assist + step as f32 * 0.1).clamp(0.0, 1.0),
                 3 => save.invert_pitch = !save.invert_pitch,
                 4 => save.speedometer = !save.speedometer,
-                _ => save.fullscreen = !save.fullscreen,
+                5 => save.fullscreen = !save.fullscreen,
+                _ => save.plane_wii_style = !save.plane_wii_style,
             }
             save.store();
         }
@@ -271,14 +272,16 @@ fn render(
         }
         Page::Settings => {
             header.0.set_if_neq(Text::new(texts.ui(Ui::Settings))); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
-            vec![
+            let mut rows: Vec<(String, String)> = vec![
                 (texts.ui(Ui::FlightSensitivity).into(), choice(format!("{:.0}%", save.flight_sensitivity * 100.0))),
                 (texts.ui(Ui::LookSensitivity).into(), choice(format!("{:.0}%", save.look_sensitivity * 100.0))),
                 (texts.ui(Ui::GroundAssist).into(), choice(format!("{:.0}%", save.ground_assist * 100.0))),
                 (texts.ui(Ui::InvertPitch).into(), choice(onoff(save.invert_pitch))),
                 (texts.ui(Ui::Speedometer).into(), choice(onoff(save.speedometer))),
                 (texts.ui(Ui::Fullscreen).into(), choice(onoff(save.fullscreen))),
-            ]
+            ];
+            if crate::pwr::available() { rows.push((texts.ui(Ui::PlaneHandling).into(), choice(texts.ui(if save.plane_wii_style { Ui::WiiStyle } else { Ui::Original })))); }
+            rows
         }
         Page::Record => {
             header.0.set_if_neq(Text::new(format!("{} — {} / {}", texts.ui(Ui::IPoints), save.collected.len(), points.0.len() * 3)));

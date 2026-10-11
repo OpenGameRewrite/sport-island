@@ -154,19 +154,20 @@ fn segment_distance(a: Vec3, b: Vec3, c: Vec3) -> f32 {
 #[allow(clippy::too_many_arguments)]
 fn pick(
     mut commands: Commands, items: Res<Items>, mut save: ResMut<Save>, mut last: Local<Option<Vec3>>,
-    flying: Query<(&Transform, Option<&Plane>), With<Flying>>, vehicles: Query<&Vehicle>, planes: Query<&Plane>,
+    flying: Query<(&Transform, Option<&Plane>, Option<&Vehicle>), With<Flying>>, vehicles: Query<&Vehicle>, planes: Query<&Plane>,
     pickups: Query<(Entity, &Pickup)>, mut sounds: MessageWriter<Sound>,
 ) {
-    let (Ok((t, plane)), Some(now_class)) = (flying.single(), flying_class(&save, &vehicles, &planes)) else { *last = None; return };
+    let (Ok((t, plane, vehicle)), Some(now_class)) = (flying.single(), flying_class(&save, &vehicles, &planes)) else { *last = None; return };
     let now = t.translation;
     let Some(before) = last.replace(now) else { return };
-    // The plane's shown attitude: its bank and any barrel roll on top of the flight model.
-    let (up, right, roll) = plane.map_or((t.rotation * Vec3::Y, t.rotation * Vec3::X, 0.0), |p| {
-        let shown = t.rotation * Quat::from_rotation_z(p.bank() + p.twist);
-        let roll = if p.roll != 0.0 { p.roll } else if p.since_roll < 60 { p.last_roll } else { 0.0 };
+    // The plane's attitude: the 3DS planes' own, or the Wii-style flight
+    // model's with its drawn bank (that model cannot roll over).
+    let (up, right, roll) = match (plane, vehicle) {
         // The Wii plane frame's +X is its left wing.
-        (shown * Vec3::Y, -(t.rotation * Vec3::X), roll)
-    });
+        (Some(p), _) => (t.rotation * Quat::from_rotation_z(p.bank()) * Vec3::Y, -(t.rotation * Vec3::X), 0.0),
+        (_, Some(v)) => (t.rotation * Vec3::Y, t.rotation * Vec3::X, v.flight.recent_roll()),
+        _ => (t.rotation * Vec3::Y, t.rotation * Vec3::X, 0.0),
+    };
     for (e, p) in &pickups {
         let item = &items.0[p.0];
         let set = &SETS[item.set];

@@ -41,12 +41,14 @@ impl Kind {
         match self { Kind::Plane => "Vehicle:PLANE", Kind::Jet => "Vehicle:JET", Kind::Glider => "Vehicle:GLIDER", Kind::PGlider => "Vehicle:PGLIDER", Kind::Rocket => "Vehicle:ROCKET", Kind::SuperRocket => "Vehicle:SUPERROCKET" }
     }
     fn gliding(self) -> bool { matches!(self, Kind::Glider | Kind::PGlider) }
+    pub fn plane(self) -> bool { matches!(self, Kind::Plane | Kind::Jet) }
     /// `vehicle.val` chase camera: distance behind and height above, metres.
     fn camera(self) -> (f32, f32) {
         match self { Kind::PGlider => (8.0, 0.5), Kind::Rocket | Kind::SuperRocket => (3.5, 0.0), _ => (9.9, 2.2) }
     }
-    /// Flown by the Wii plane's physics (`plane.rs`) rather than this module.
-    pub fn wii_physics(self) -> bool { matches!(self, Kind::Plane | Kind::Jet) }
+    /// Flown by the Wii plane's physics (`plane.rs`) rather than this module:
+    /// the 3DS plane and jet when the Wii-style handling setting is on.
+    pub fn wii_physics(self, save: &Save) -> bool { self.plane() && save.plane_wii_style }
 }
 
 /// The add-on vehicle selected in the save, if any.
@@ -104,6 +106,220 @@ impl Body {
     fn transform(&self) -> Transform {
         let q = self.rot;
         Transform { translation: pwr::world(self.pos.to_array()), rotation: Quat::from_xyzw(-q.x, -q.y, q.z, q.w), scale: Vec3::splat(SCALE) }
+    }
+}
+
+/// Tuning of the 3DS plane and Turbo Jet: the `plane` node of their
+/// `vehicle.val`, with the game's defaults for missing keys.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaneParams { power: f32, turbo: f32, drag: f32, water_drag: f32, brake_drag: f32, low_speed_brake_drag: f32 }
+
+impl Default for PlaneParams {
+    fn default() -> Self { Self { power: 1.0, turbo: 1.0, drag: 1.0, water_drag: 0.0, brake_drag: 0.0, low_speed_brake_drag: 0.0 } }
+}
+
+impl PlaneParams {
+    fn load(kind: Kind) -> Self {
+        let d = Self::default();
+        let table = pwr::data(&format!("{}_/vehicle.val.json", kind.container()));
+        let (plane, physics) = (&table["plane"][0], &table["physics"][0]);
+        let f = |node: &Value, key: &str, or: f32| node[key].as_f64().map_or(or, |v| v as f32);
+        Self {
+            power: f(physics, "power_factor", d.power),
+            turbo: f(plane, "turbo_power_factor", d.turbo),
+            drag: f(plane, "drag_factor", d.drag),
+            water_drag: f(plane, "water_extra_drag", d.water_drag),
+            brake_drag: f(plane, "brake_extra_drag", d.brake_drag),
+            low_speed_brake_drag: f(plane, "low_speed_brake_extra_drag", d.low_speed_brake_drag),
+        }
+    }
+}
+
+/// 3DS plane controls: `steer` > 0 banks right, `pitch` > 0 climbs; the
+/// shoulder buttons lean (both: fly inverted) and double-tapped barrel-roll.
+#[derive(Default, Clone, Copy)]
+pub struct PlaneInput { pub steer: f32, pub pitch: f32, pub lean_left: bool, pub lean_right: bool, pub brake: bool, pub turbo: bool }
+
+/// The 3DS plane's flight state: eased stick, coordinated turn, path hold,
+/// leans, barrel rolls and the turbo meter.
+#[derive(Clone, Debug)]
+pub struct Flight {
+    pub pitch: f32,
+    pub roll: f32,
+    raw_roll: f32,
+    yaw: f32,
+    flown: f32,
+    /// Barrel roll under way: -1 left, 1 right, 0 none.
+    pub barrel: f32,
+    /// The previous barrel roll's direction and the seconds since it ended.
+    pub last_barrel: f32,
+    pub since_barrel: f32,
+    barrel_time: f32,
+    past_inverted: bool,
+    tap_left: f32,
+    tap_right: f32,
+    held: (bool, bool),
+    since_brake: f32,
+    since_release: f32,
+    /// Turbo: 0 ready, 1 burning, 2 fading, 3 recharging; `meter` 0..1.
+    pub turbo: u8,
+    turbo_time: f32,
+    pub meter: f32,
+    pub on_water: bool,
+}
+
+impl Default for Flight {
+    fn default() -> Self {
+        Self { pitch: 0.0, roll: 0.0, raw_roll: 0.0, yaw: 0.0, flown: 0.0, barrel: 0.0, last_barrel: 0.0, since_barrel: 10.0, barrel_time: 0.0, past_inverted: false,
+            tap_left: 10.0, tap_right: 10.0, held: (false, false), since_brake: 10.0, since_release: 10.0, turbo: 0, turbo_time: 0.0, meter: 1.0, on_water: false }
+    }
+}
+
+impl Flight {
+    /// Bank angle about the nose, measured from the level heading frame
+    /// (negative with the right wing down).
+    fn bank(x: Vec3, z: Vec3) -> f32 {
+        let heading = Vec3::new(z.x, 0.0, z.z).normalize_or(Vec3::new(-x.z, 0.0, x.x).normalize_or(Vec3::Z));
+        x.dot(Vec3::Y).atan2(x.dot(Vec3::Y.cross(heading)))
+    }
+
+    /// One frame of the 3DS plane flight state.
+    pub fn step(&mut self, b: &mut Body, input: PlaneInput, p: PlaneParams) {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        self.flown += DT;
+        let (x, y, z) = b.axes();
+        // Eased stick; a full deflection counts fully, a half one at 3/8.
+        let mag = Vec2::new(input.steer, input.pitch).length().min(1.0);
+        let k = 0.5 + 0.5 * mag;
+        self.pitch += (input.pitch * k - self.pitch).clamp(-0.0500501, 0.0500501);
+        if self.flown > 1.0 { self.roll += (input.steer * k - self.roll).clamp(-0.0375375, 0.0375375); } else { self.roll *= 0.9; }
+        self.raw_roll += (input.steer * mag - self.raw_roll).clamp(-0.0375375, 0.0375375);
+
+        // Shoulder taps: a second tap within half a second barrel-rolls that way.
+        for t in [&mut self.tap_left, &mut self.tap_right, &mut self.since_barrel] { *t += DT; }
+        let (left_edge, right_edge) = (input.lean_left && !self.held.0, input.lean_right && !self.held.1);
+        self.held = (input.lean_left, input.lean_right);
+        if self.barrel == 0.0 {
+            let start = if left_edge && !input.lean_right {
+                if self.tap_left > 0.5 { self.tap_left = 0.0; 0.0 } else { -1.0 }
+            } else if right_edge && !input.lean_left {
+                if self.tap_right > 0.5 { self.tap_right = 0.0; 0.0 } else { 1.0 }
+            } else { 0.0 };
+            if start != 0.0 {
+                (self.barrel, self.barrel_time, self.past_inverted, self.since_barrel, self.tap_left, self.tap_right) = (start, 0.0, false, 0.0, 0.0, 0.0);
+            }
+        }
+        if self.barrel != 0.0 {
+            // Spin about the nose at two turns a second, easing to half once
+            // past upside down; stop when upright again (or after a second).
+            self.barrel_time += DT;
+            let speed = if self.past_inverted { remap(-0.25, 0.25, 1.0, 0.5, y.y) } else { 1.0 };
+            b.torque += z * ((-self.barrel * speed * 12.5664 - b.ang.dot(z)) * b.inertia.z * 50.0);
+            if !self.past_inverted {
+                self.past_inverted = y.y < 0.25 || self.barrel_time > 1.0;
+            } else if y.y > 0.25 || self.barrel_time > 1.0 {
+                (self.last_barrel, self.barrel, self.since_barrel) = (self.barrel, 0.0, 0.0);
+            }
+        }
+
+        // Bank to the stick (90° at full), or hold a lean / fly inverted.
+        let bank = Self::bank(x, z);
+        let mut target = FRAC_PI_2 * self.roll;
+        let mut gain = 1.0;
+        let mut turn_bank = bank;
+        if self.barrel == 0.0 {
+            let left = input.lean_left || self.tap_left < 0.33;
+            let right = input.lean_right || self.tap_right < 0.33;
+            if left != right {
+                target = if left { -FRAC_PI_2 } else { FRAC_PI_2 };
+                if x.y * target < 0.0 { gain = 2.0; }
+            } else if left && right {
+                if y.y < -0.1 { gain = 2.0; }
+                target = if bank <= 0.0 { PI + target * 0.85 } else { target * 0.85 - PI };
+                // Upside down, the turn follows the bank as seen from the cockpit.
+                turn_bank = if bank > FRAC_PI_2 { PI - bank } else if bank < -FRAC_PI_2 { -PI - bank } else { bank };
+            }
+        }
+        let fade = if self.barrel != 0.0 { 0.0 } else { remap(0.0, 0.7, 0.0, 1.0, self.since_barrel) };
+        let roll = (gain * -7.5 * (bank + target) - 4.0 * b.ang.dot(z)).clamp(-10.0, 10.0);
+        b.torque += z * roll * b.inertia.z * 10.0 * fade;
+
+        // Banking turns about the vertical (on water the stick steers).
+        if self.on_water {
+            self.yaw = 0.3 * self.raw_roll + (self.yaw - 0.3 * self.raw_roll) * 0.95;
+        } else {
+            let err = turn_bank.clamp(-FRAC_PI_2, FRAC_PI_2) * -1.2 - self.yaw;
+            let step = remap(0.5, 0.0, 0.0333667, 0.0, err.abs());
+            self.yaw += err.clamp(-step, step);
+        }
+        let yaw = ((self.yaw * 0.5 - b.ang.dot(Vec3::Y)) * 2.0).clamp(-10.0, 10.0);
+        b.torque += Vec3::Y * yaw * b.inertia.y * 10.0;
+
+        // Path hold: the flight path (the nose when slow) climbs at up to
+        // about 23° with the stick and levels out when it is released.
+        let fwd = b.vel.dot(z);
+        let path = b.vel.lerp(z, remap(8.88889, 17.7778, 1.0, 0.0, fwd));
+        let path = path / path.length().max(0.01);
+        let level_right = Vec3::Y.cross(Vec3::new(z.x, 0.0, z.z).normalize_or(Vec3::Z));
+        let pitch = ((path.y - 0.785398 * self.pitch * 0.5) * 5.0 - b.ang.dot(level_right) * 2.0).clamp(-10.0, 10.0);
+        b.torque += Vec3::Y.cross(z) * pitch * b.inertia.x * 10.0;
+
+        // Wings carry the weight once flying; the airframe resists sideslip
+        // and sinking through its plates.
+        let mut accel = Vec3::Y * (1.0 - z.y.abs()) * GRAVITY * remap(4.44444, 15.5556, 0.0, 1.0, b.vel.length());
+        let plates = 900.0 * remap(11.1111, 20.0, 0.01, 1.0, fwd);
+        b.plate(Vec3::Y, plates);
+        b.plate(Vec3::X, plates);
+
+        // Engine: constant power (thrust falls with speed), cut to a quarter
+        // while braking and restored over a second after; quadratic drag.
+        if input.brake { self.since_brake = 0.0; self.since_release = 0.0; } else { self.since_brake += DT; self.since_release += DT; }
+        let held_back = if input.brake { 1.0 } else { remap(0.25, 1.0, 1.0, 0.0, self.since_brake) };
+        let thrust = (200.0 - 150.0 * held_back) * if self.on_water { 0.5 } else { 1.0 };
+        accel += z * (p.power * thrust / fwd.max(1.0));
+        let fast = remap(26.6667, 35.5556, 0.0, 1.0, fwd);
+        let base = (p.drag + (1.0 - p.drag) * fast) * 0.02;
+        let mut drag = base;
+        if self.on_water { drag += p.water_drag * (1.0 - fast) * base; }
+        if input.brake { drag += (p.brake_drag + (p.low_speed_brake_drag - p.brake_drag) * fast) * base; }
+        accel -= b.vel * (drag * b.vel.length()).min(25.0);
+        if self.on_water {
+            let s = b.vel.length();
+            accel += b.vel * (s.min(0.888889) * -0.9375 / s.max(0.1));
+            let side = Vec3::new(x.x, 0.0, x.z);
+            accel += side * (b.vel.dot(side) * -10.0).clamp(-1.0, 1.0) * GRAVITY;
+        }
+
+        // Turbo: 2.5 s at five g along the nose, a one-second fade, then the
+        // meter recharges over four seconds.
+        self.turbo_time += DT;
+        match self.turbo {
+            0 => { self.meter = 1.0; if input.turbo { (self.turbo, self.turbo_time, self.since_release) = (1, 0.0, 10.0); } }
+            1 if self.turbo_time > 2.5 => (self.turbo, self.turbo_time) = (2, 0.0),
+            1 => self.meter = 1.0 - self.turbo_time * 0.4,
+            2 => { self.meter = self.turbo_time * 0.25; if self.turbo_time > 1.0 { (self.turbo, self.turbo_time) = (3, 0.0); } }
+            _ if self.turbo_time > 3.0 => (self.turbo, self.meter) = (0, 1.0),
+            _ => self.meter = (self.turbo_time + 1.0) * 0.25,
+        }
+        if !input.brake {
+            let ramp = remap(0.0, 1.0, 0.0, 1.0, self.since_release) * p.turbo * 49.05;
+            match self.turbo {
+                1 => accel += z * ramp,
+                2 => { let f = remap(0.0, 1.0, 1.0, 0.0, self.turbo_time); accel += z * ramp * (1.0 - (1.0 - f) * (1.0 - f)); }
+                _ => {}
+            }
+        }
+
+        // Ceiling: climbing stalls out and the nose drops near 1372.5 m.
+        let above = b.pos.y - 1372.5;
+        accel.y += b.vel.y.max(0.0) * remap(-15.25, 0.0, 0.0, -10.0, above);
+        b.torque += Vec3::NEG_Y.cross(z) * b.inertia.x * remap(-7.625, 0.0, 0.0, -30.0, above);
+        b.accelerate(accel);
+    }
+
+    /// The barrel roll under way or ended within the last second.
+    pub fn recent_roll(&self) -> f32 {
+        if self.barrel != 0.0 { self.barrel } else if self.since_barrel < 1.0 { self.last_barrel } else { 0.0 }
     }
 }
 
@@ -269,6 +485,8 @@ pub struct Vehicle {
     glider: Glider,
     pedal: Pedal,
     rocket: Rocket,
+    pub flight: Flight,
+    params: PlaneParams,
     tapped: bool,
     /// Controls and state for animation and sound.
     pub drive: crate::motion::Drive,
@@ -285,6 +503,7 @@ pub fn plugin(app: &mut App) {
     let thermals = std::fs::read(crate::asset_dir().join("pwr/data/wuhu_free_glider/thermal.val.json")).ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok()).map_or_else(Thermals::default, |t| Thermals::load(&t));
     app.insert_resource(thermals)
+        .add_systems(PreUpdate, shoulders.after(crate::input::read))
         .add_systems(Update, board.before(crate::plane::board).run_if(crate::menu::playing))
         .add_systems(FixedUpdate, fly.run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
         .add_systems(Update, camera.run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
@@ -293,6 +512,15 @@ pub fn plugin(app: &mut App) {
         .add_systems(Update, show_thermals)
         .add_systems(OnExit(Mode::Fly), despawn)
         .add_systems(OnExit(AppState::Play), despawn);
+}
+
+/// While a 3DS plane flies, its shoulder buttons lean instead of opening the
+/// i-point list or toggling the speedometer (they share LB / RB by default).
+fn shoulders(mut c: ResMut<Controls>, vehicles: Query<&Vehicle>) {
+    if (c.lean_left || c.lean_right) && vehicles.iter().any(|v| v.kind.plane()) {
+        c.record = false;
+        c.speedometer = false;
+    }
 }
 
 /// Boards the selected add-on vehicle, or steps off it.
@@ -310,20 +538,21 @@ fn board(
     if !c.board { return; }
     match mode.get() {
         Mode::Walk => {
-            let Some(kind) = selected(&save).filter(|k| !k.wii_physics()) else { return };
+            let Some(kind) = selected(&save).filter(|k| !k.wii_physics(&save)) else { return };
             // The Wii plane's boarding code must not also react.
             c.board = false;
             // Every 3DS vehicle body: 454.5 kg, inertia 422.8 on each axis.
             let mut body = Body::new(454.5, Vec3::splat(422.799));
             // Gliders launch above the player, rocket belts lift off where they stand.
             let feet = player.1.translation;
-            let (height, speed) = match kind { Kind::Glider => (80.0, 11.1111), Kind::PGlider => (50.0, 11.1111), _ => (1.0, 0.0) };
+            // Planes start at cruise, 60 m up (as the Wii plane does).
+            let (height, speed) = match kind { Kind::Glider => (80.0, 11.1111), Kind::PGlider => (50.0, 11.1111), Kind::Plane => (60.0, 21.0), Kind::Jet => (60.0, 30.0), _ => (1.0, 0.0) };
             body.pos = Vec3::new(feet.x, feet.y, -feet.z) / SCALE + Vec3::Y * height;
             body.rot = Quat::from_rotation_y(-rig.yaw);
             body.vel = body.rot * Vec3::Z * speed;
             let t = body.transform();
             let rocket = Rocket { power: if kind == Kind::SuperRocket { 1.3 } else { 1.0 } };
-            commands.spawn((Vehicle { kind, body, glider: Glider::default(), pedal: Pedal::default(), rocket, tapped: false, drive: default() }, Flying, t, Visibility::default())).with_children(|v| {
+            commands.spawn((Vehicle { kind, body, glider: Glider::default(), pedal: Pedal::default(), rocket, flight: Flight::default(), params: PlaneParams::load(kind), tapped: false, drive: default() }, Flying, t, Visibility::default())).with_children(|v| {
                 v.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("pwr/models/{}_lod1.glb", kind.container())))), Rider(kind), crate::motion::Parts::new(kind)))
                     .observe(attach_pilot).observe(crate::motion::collect);
             });
@@ -373,11 +602,12 @@ fn fly(
     // Eased controls drive the moving parts.
     let ease = |from: f32, to: f32| from + (to - from) * 0.12;
     let thrust = if c.boost > 0.5 { 1.0 } else if c.shoot { 0.5 } else { 0.0 };
-    let rocket = !v.kind.gliding();
+    let rocket = matches!(v.kind, Kind::Rocket | Kind::SuperRocket);
+    let thrust = if v.kind.plane() { if v.flight.turbo == 1 { 1.0 } else if input.brake { 0.2 } else { 0.6 } } else { thrust };
     v.drive = crate::motion::Drive {
-        steer: ease(v.drive.steer, stick.x.clamp(-1.0, 1.0)),
-        pitch: ease(v.drive.pitch, if rocket { forward } else { input.pitch }.clamp(-1.0, 1.0)),
-        thrust: if rocket { ease(v.drive.thrust, thrust) } else { 0.0 },
+        steer: if v.kind.plane() { v.flight.roll } else { ease(v.drive.steer, stick.x.clamp(-1.0, 1.0)) },
+        pitch: if v.kind.plane() { v.flight.pitch } else { ease(v.drive.pitch, if rocket { forward } else { input.pitch }.clamp(-1.0, 1.0)) },
+        thrust: if rocket || v.kind.plane() { ease(v.drive.thrust, thrust) } else { 0.0 },
         crank: v.pedal.crank,
         brake: input.brake,
         lift: if v.kind.gliding() { lift } else { 0.0 },
@@ -392,7 +622,10 @@ fn fly(
             let r = RocketInput { thrust: c.boost > 0.5, light: c.shoot, hover: c.slow > 0.5, tilt: forward, steer: stick.x };
             v.rocket.step(&mut v.body, r);
         }
-        Kind::Plane | Kind::Jet => {}
+        Kind::Plane | Kind::Jet => {
+            let p = PlaneInput { steer: stick.x.clamp(-1.0, 1.0), pitch: input.pitch.clamp(-1.0, 1.0), lean_left: c.lean_left, lean_right: c.lean_right, brake: c.slow > 0.5, turbo: c.boost > 0.5 };
+            v.flight.step(&mut v.body, p, v.params);
+        }
     }
     v.body.integrate();
     let to = pwr::world(v.body.pos.to_array());
@@ -400,7 +633,8 @@ fn fly(
     // 13.3 m/s into the ground or 26.7 m/s overall).
     let travel = to - from;
     // Gliders land on their wheels/feet (`ground_dy`); rocket belts touch with their boots.
-    let reach = if v.kind.gliding() { 0.95 } else { 0.05 } * SCALE;
+    let reach = if v.kind.gliding() { 0.95 } else if v.kind.plane() { 0.6 } else { 0.05 } * SCALE;
+    v.flight.on_water = false;
     let hit = col.raycast(from, travel.normalize_or_zero(), travel.length() + reach);
     let below = col.ground(to + Vec3::Y * reach, 0.0, 2.0 * reach);
     if let Some(h) = hit.or(below) {
@@ -409,8 +643,16 @@ fn fly(
         // Rocket belts touch down at up to 15.6 m/s, gliders at 13.3 m/s.
         let limit = if v.kind.gliding() { 13.3333 } else { 15.5556 };
         let gentle = !water && v.body.vel.dot(normal) > -limit && v.body.vel.length() < 26.6667 && h.n.y.abs() > 0.6;
+        // The planes float on water and can take off again.
+        if v.kind.plane() && water && v.body.vel.y > -13.3333 && h.n.y.abs() > 0.6 {
+            v.flight.on_water = true;
+            v.body.pos.y = v.body.pos.y.max(h.pos.y / SCALE);
+            v.body.vel.y = v.body.vel.y.max(0.0);
+            *t = v.body.transform();
+            return;
+        }
         // A rocket belt stands on the ground and can lift off again.
-        if gentle && !v.kind.gliding() {
+        if gentle && !v.kind.gliding() && !v.kind.plane() {
             if let Some(k) = h.platform {
                 let ride = col.platforms[k].carry(h.pos, DT) / SCALE;
                 v.body.pos += Vec3::new(ride.x, ride.y, -ride.z);
@@ -450,7 +692,7 @@ fn camera(
     // Gliders frame their travel; rocket belts look where the pilot faces.
     let travel = Vec3::new(v.body.vel.x, 0.0, -v.body.vel.z);
     let nose = t.rotation * Vec3::NEG_Z;
-    let flat = if travel.length() > 1.0 && v.kind.gliding() { travel } else { nose.with_y(0.0) };
+    let flat = if travel.length() > 1.0 && (v.kind.gliding() || v.kind.plane()) { travel } else { nose.with_y(0.0) };
     if *heading == Vec3::ZERO { *heading = flat.normalize_or(Vec3::NEG_Z); }
     *heading = heading.lerp(flat.normalize_or(*heading), 1.0 - (-3.0 * dt).exp()).normalize_or(Vec3::NEG_Z);
     let yaw = (-heading.x).atan2(-heading.z);
@@ -488,6 +730,9 @@ fn gauge(vehicles: Query<&Vehicle>, planes: Query<&crate::plane::Plane>, mut q: 
     let shown = if let Some(v) = vehicles.iter().find(|v| v.kind == Kind::PGlider) {
         **color = TextColor(if v.pedal.exhausted { Color::srgb(0.6, 0.6, 0.65) } else { Color::srgb(0.85, 0.15, 0.3) });
         Some(bar((v.pedal.stamina * 5.0).ceil() as usize, '♥', '♡'))
+    } else if let Some(v) = vehicles.iter().find(|v| v.kind.plane()) {
+        **color = TextColor(crate::menu::INK);
+        Some(format!("TURBO {}", bar((v.flight.meter * 5.0).ceil() as usize, '■', '□')))
     } else if let Some(p) = planes.iter().find(|p| p.jet) {
         **color = TextColor(crate::menu::INK);
         Some(format!("TURBO {}", bar((p.turbo * 5.0).ceil() as usize, '■', '□')))
@@ -589,6 +834,85 @@ mod tests {
         assert!((t.lift(Vec3::new(0.0, 0.5, 0.0)) - 1.0).abs() < 0.01);
         assert!((t.lift(Vec3::new(0.0, 199.5, 0.0)) - 0.5).abs() < 0.01);
         assert_eq!(t.lift(Vec3::new(60.0, 100.0, 0.0)), 0.0);
+    }
+
+    fn plane(speed: f32) -> (Flight, Body) {
+        let mut b = Body::new(454.5, Vec3::splat(422.799));
+        b.pos = Vec3::new(0.0, 300.0, 0.0);
+        b.vel = Vec3::Z * speed;
+        (Flight::default(), b)
+    }
+
+    fn cruise(f: &mut Flight, b: &mut Body, input: PlaneInput, p: PlaneParams, seconds: f32) {
+        for _ in 0..(seconds / DT) as usize { f.step(b, input, p); b.integrate(); }
+    }
+
+    #[test]
+    fn hands_off_plane_cruises_straight_and_level() {
+        let (mut f, mut b) = plane(21.0);
+        cruise(&mut f, &mut b, PlaneInput::default(), PlaneParams::default(), 20.0);
+        let (_, y, z) = b.axes();
+        assert!((b.pos.y - 300.0).abs() < 15.0, "altitude {}", b.pos.y);
+        assert!(b.vel.length() > 17.0 && b.vel.length() < 26.0, "speed {}", b.vel.length());
+        assert!(y.y > 0.95 && z.x.abs() < 0.05, "attitude up {y} nose {z}");
+        // The jet's lower drag makes it faster at the same power.
+        let (mut f, mut j) = plane(21.0);
+        cruise(&mut f, &mut j, PlaneInput::default(), PlaneParams { drag: 0.25, ..default() }, 20.0);
+        assert!(j.vel.length() > b.vel.length() + 5.0, "jet {} plane {}", j.vel.length(), b.vel.length());
+    }
+
+    #[test]
+    fn plane_banks_and_turns_the_way_of_the_stick_and_climbs_with_it() {
+        let (mut f, mut b) = plane(21.0);
+        cruise(&mut f, &mut b, PlaneInput { steer: 1.0, ..default() }, PlaneParams::default(), 4.0);
+        let (x, _, z) = b.axes();
+        assert!(z.x > 0.3, "heading {z}");
+        assert!(x.y < -0.5, "right wing down {x}");
+        let (mut f, mut b) = plane(21.0);
+        cruise(&mut f, &mut b, PlaneInput { pitch: 1.0, ..default() }, PlaneParams::default(), 4.0);
+        assert!(b.pos.y > 315.0, "climbed to {}", b.pos.y);
+    }
+
+    #[test]
+    fn double_tapped_shoulder_barrel_rolls_through_upside_down() {
+        let (mut f, mut b) = plane(21.0);
+        let p = PlaneParams::default();
+        let right = PlaneInput { lean_right: true, ..default() };
+        for input in [right, PlaneInput::default(), right] { f.step(&mut b, input, p); b.integrate(); }
+        assert_eq!(f.barrel, 1.0);
+        let mut lowest: f32 = 1.0;
+        for _ in 0..90 {
+            f.step(&mut b, PlaneInput::default(), p);
+            b.integrate();
+            lowest = lowest.min(b.axes().1.y);
+        }
+        assert!(lowest < -0.5, "never upside down ({lowest})");
+        assert_eq!((f.barrel, f.last_barrel), (0.0, 1.0));
+        cruise(&mut f, &mut b, PlaneInput::default(), p, 2.0);
+        assert!(b.axes().1.y > 0.9, "upright again");
+    }
+
+    #[test]
+    fn both_shoulders_fly_inverted() {
+        let (mut f, mut b) = plane(21.0);
+        cruise(&mut f, &mut b, PlaneInput { lean_left: true, lean_right: true, ..default() }, PlaneParams::default(), 3.0);
+        assert!(b.axes().1.y < -0.7, "up {}", b.axes().1);
+        let (mut f, mut b) = plane(21.0);
+        cruise(&mut f, &mut b, PlaneInput { lean_left: true, ..default() }, PlaneParams::default(), 2.0);
+        assert!(b.axes().0.y > 0.8, "knife edge, right wing up {}", b.axes().0);
+    }
+
+    #[test]
+    fn turbo_drains_then_refills() {
+        let (mut f, mut b) = plane(21.0);
+        let p = PlaneParams::default();
+        cruise(&mut f, &mut b, PlaneInput { turbo: true, ..default() }, p, 1.0);
+        assert_eq!(f.turbo, 1);
+        assert!(f.meter < 0.7 && b.vel.length() > 30.0, "meter {} speed {}", f.meter, b.vel.length());
+        cruise(&mut f, &mut b, PlaneInput::default(), p, 2.0);
+        assert!(f.turbo >= 2 && f.meter < 0.5, "state {} meter {}", f.turbo, f.meter);
+        cruise(&mut f, &mut b, PlaneInput::default(), p, 4.5);
+        assert_eq!((f.turbo, f.meter), (0, 1.0));
     }
 
     fn rocket() -> (Rocket, Body) {

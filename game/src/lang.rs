@@ -116,6 +116,7 @@ pub enum Ui {
     DLeft, DRight, DUp, DDown,
     South, East, West, North, Escape, Select, RightStick, Mouse, Fullscreen, GroundAssist,
     YellowGreen, Green, SkyBlue, Pink, Purple, Brown, Black,
+    PlaneHandling, Original, WiiStyle,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -182,6 +183,9 @@ const UI: &[[&str; 5]] = &[
     ["Purple", "Violet", "Lila", "Morado", "Viola"],
     ["Brown", "Marron", "Braun", "Marrón", "Marrone"],
     ["Black", "Noir", "Schwarz", "Negro", "Nero"],
+    ["3DS plane handling", "Pilotage des avions 3DS", "Steuerung der 3DS-Flugzeuge", "Manejo de los aviones de 3DS", "Comandi degli aerei 3DS"],
+    ["Original", "Original", "Original", "Original", "Originale"],
+    ["Wii-style", "Style Wii", "Wii-Stil", "Estilo Wii", "Stile Wii"],
 ];
 
 const ACTIONS: &[[&str; 5]] = &[
@@ -198,6 +202,8 @@ const ACTIONS: &[[&str; 5]] = &[
     ["i-point list", "Liste des points ⓘ", "ⓘ-Punkteliste", "Lista de puntos ⓘ", "Elenco punti ⓘ"],
     ["Speedometer", "Indicateur de vitesse", "Geschwindigkeitsanzeige", "Velocímetro", "Indicatore di velocità"],
     ["Recenter camera", "Recentrer la caméra", "Kamera zentrieren", "Centrar cámara", "Centra la telecamera"],
+    ["Lean left / barrel roll", "Incliner à gauche / tonneau", "Links neigen / Fassrolle", "Inclinar a la izquierda / tonel", "Inclina a sinistra / tonneau"],
+    ["Lean right / barrel roll", "Incliner à droite / tonneau", "Rechts neigen / Fassrolle", "Inclinar a la derecha / tonel", "Inclina a destra / tonneau"],
 ];
 
 pub fn plugin(app: &mut App) {

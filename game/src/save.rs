@@ -29,6 +29,8 @@ pub struct Save {
     pub ground_assist: f32,
     /// Mii favourite colour (`colortex.val` order) for add-on vehicle liveries.
     pub favorite: u8,
+    /// Fly the 3DS plane and jet with the Wii plane's physics instead of their own.
+    pub plane_wii_style: bool,
     /// Pilotwings Resort collectibles found, by set (`collect::SETS`).
     pub found: std::collections::BTreeMap<String, BTreeSet<u16>>,
 }
@@ -36,7 +38,7 @@ pub struct Save {
 impl Default for Save {
     fn default() -> Self {
         Self { lang: None, collected: BTreeSet::new(), time: 0, plane: 0, invert_pitch: false,
-            bindings: Default::default(), livery: 0, flight_sensitivity: 1.0, look_sensitivity: 1.0, speedometer: false, fullscreen: false, ground_assist: 1.0, favorite: 0, found: Default::default() }
+            bindings: Default::default(), livery: 0, flight_sensitivity: 1.0, look_sensitivity: 1.0, speedometer: false, fullscreen: false, ground_assist: 1.0, favorite: 0, plane_wii_style: false, found: Default::default() }
     }
 }
 

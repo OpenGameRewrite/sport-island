@@ -64,6 +64,7 @@ pub fn collect(ready: On<WorldInstanceReady>, mut parts: Query<&mut Parts>, chil
         Kind::Rocket | Kind::SuperRocket => &[("jet_1", "rocket_jet_fx", "flame_1"), ("jet_2", "rocket_jet_fx", "flame_2")],
         Kind::Jet => &[("jet_1", "jet_jet_fx", "flame_1"), ("jet_2", "jet_jet_fx", "flame_2")],
         Kind::PGlider => &[("left_prop", "pglider_prop_slow", "prop_l"), ("right_prop", "pglider_prop_slow", "prop_r")],
+        Kind::Plane => &[("prop", "plane_prop_fast", "prop_main")],
         _ => &[],
     };
     for (joint, model, name) in mounts {
@@ -123,6 +124,7 @@ fn animate(
     time: Res<Time>,
     mut phase: Local<f32>,
     mut spin: Local<f32>,
+    mut prop: Local<f32>,
     vehicles: Query<&Vehicle>,
     planes: Query<&Plane>,
     models: Query<&Parts>,
@@ -134,6 +136,7 @@ fn animate(
     let dt = time.delta_secs();
     *phase = (*phase + d.crank * dt) % TAU;
     *spin = (*spin + (4.0 + d.crank * 3.0) * dt) % TAU;
+    *prop = (*prop + (20.0 + 40.0 * d.thrust) * dt) % TAU;
     for p in &models {
         let mut set = |name: &str, f: &dyn Fn(&mut Transform)| {
             if let Some(mut t) = p.nodes.get(name).and_then(|&e| nodes.get_mut(e).ok()) { f(&mut t); }
@@ -145,6 +148,7 @@ fn animate(
         for f in ["flame_1", "flame_2"] { set(f, &|t| t.scale = stretch.max(Vec3::splat(1e-3))); }
         set("prop_l", &|t| t.rotation = Quat::from_rotation_z(*spin));
         set("prop_r", &|t| t.rotation = Quat::from_rotation_z(-*spin));
+        set("prop_main", &|t| t.rotation = Quat::from_rotation_z(*prop));
         // The pilot leans into turns (the figure faces the vehicle's -Z).
         if matches!(p.kind, Kind::PGlider | Kind::Rocket | Kind::SuperRocket) {
             for (rest, mut t) in &mut pilots { t.rotation = rest.0.rotation * Quat::from_rotation_z(0.25 * d.steer); }
@@ -165,7 +169,8 @@ fn loop_names(kind: Kind) -> &'static [&'static str] {
         Kind::PGlider => &["pwr/glider_flutter", "pwr/pglider_bicyclefreerun", "pwr/race_thermalwind"],
         Kind::Rocket => &["pwr/rocket_jet", "pwr/rocket_wind"],
         Kind::SuperRocket => &["pwr/superrocket_jet", "pwr/rocket_wind"],
-        Kind::Plane | Kind::Jet => &[],
+        Kind::Plane => &["pwr/plane_engine"],
+        Kind::Jet => &["pwr/jet_engine"],
     }
 }
 
@@ -204,9 +209,10 @@ fn loops(
 fn cues(save: Res<Save>, vehicles: Query<&Vehicle>, planes: Query<&Plane>, mut last: Local<Option<(bool, u32, bool, bool, f32, bool)>>, mut out: MessageWriter<Sound>) {
     let selected = vehicles::selected(&save);
     let now = if let Ok(v) = vehicles.single() {
-        (v.drive.brake, v.hearts(), v.exhausted(), false, 1.0, false)
+        let f = &v.flight;
+        if v.kind.plane() { (false, 0, false, f.turbo == 1, f.meter, f.barrel != 0.0) } else { (v.drive.brake, v.hearts(), v.exhausted(), false, 1.0, false) }
     } else if let (Ok(p), Some(_)) = (planes.single(), selected) {
-        (false, 0, false, p.burning, if p.jet { p.turbo } else { 1.0 }, p.roll != 0.0)
+        (false, 0, false, p.burning, if p.jet { p.turbo } else { 1.0 }, false)
     } else {
         *last = None;
         return;
@@ -218,7 +224,7 @@ fn cues(save: Res<Save>, vehicles: Query<&Vehicle>, planes: Query<&Plane>, mut l
     if now.1 > before.1 { out.write(Sound::effect("pwr/race_gainheart", None)); }
     if now.2 && !before.2 { out.write(Sound::effect("pwr/pglider_overheated", None)); }
     if now.3 && !before.3 { out.write(Sound::effect("pwr/plane_turbo", None)); }
-    if now.4 >= 1.0 && before.4 < 1.0 { out.write(Sound::effect("pwr/jet_turbo_recharge", None)); }
+    if now.4 >= 1.0 && before.4 < 1.0 { out.write(Sound::effect(if selected == Some(Kind::Jet) { "pwr/jet_turbo_recharge" } else { "pwr/plane_turbo_recharge" }, None)); }
     if now.5 && !before.5 { out.write(Sound::effect(if selected == Some(Kind::Jet) { "pwr/jet_pln_twiststart" } else { "pwr/plane_pln_twiststart" }, None)); }
 }
 

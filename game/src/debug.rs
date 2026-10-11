@@ -27,12 +27,12 @@ pub fn plugin(app: &mut App) {
     if let Some(at) = std::env::var("SI_SHOOT").ok().and_then(|s| s.parse::<f32>().ok()) {
         app.add_systems(PreUpdate, (move |time: Res<Time>, mut c: ResMut<crate::input::Controls>| if time.elapsed_secs() > at { c.shoot = true; }).after(crate::input::read));
     }
-    // SI_HOLD="x y boost slow" holds the stick and triggers throughout (with SI_FLY).
+    // SI_HOLD="x y boost slow left right" holds the stick, triggers and shoulders (with SI_FLY).
     if let Ok(hold) = std::env::var("SI_HOLD") {
         let v: Vec<f32> = hold.split_whitespace().filter_map(|s| s.parse().ok()).collect();
         let at = |i: usize| v.get(i).copied().unwrap_or(0.0);
-        let (stick, boost, slow) = (Vec2::new(at(0), at(1)), at(2), at(3));
-        app.add_systems(PreUpdate, (move |mut c: ResMut<crate::input::Controls>| { c.stick = stick; c.boost = boost; c.slow = slow; }).after(crate::input::read));
+        let (stick, boost, slow, lean) = (Vec2::new(at(0), at(1)), at(2), at(3), (at(4) > 0.5, at(5) > 0.5));
+        app.add_systems(PreUpdate, (move |mut c: ResMut<crate::input::Controls>| { c.stick = stick; c.boost = boost; c.slow = slow; (c.lean_left, c.lean_right) = lean; }).after(crate::input::read));
     }
     // SI_AT="x y z" drops the player there once play starts.
     if let Some(at) = std::env::var("SI_AT").ok().map(|s| s.split_whitespace().filter_map(|v| v.parse().ok()).collect::<Vec<f32>>()).filter(|v| v.len() == 3) {

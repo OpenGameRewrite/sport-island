@@ -5,7 +5,7 @@ use bevy::prelude::*;
 
 /// Actions shared by walking and flying. Menu navigation and look sticks remain
 /// available while rebinding, so a bad binding cannot trap the user in a menu.
-pub const ACTIONS: [(&str, &str, &str); 15] = [
+pub const ACTIONS: [(&str, &str, &str); 17] = [
     ("Left", "KeyA", "DPadLeft"), ("Right", "KeyD", "DPadRight"),
     ("Forward / nose down", "KeyW", "DPadUp"), ("Back / nose up", "KeyS", "DPadDown"),
     ("Run / boost impulse", "ShiftLeft", "RightTrigger2"), ("Slow impulse", "ControlLeft", "LeftTrigger2"),
@@ -14,6 +14,9 @@ pub const ACTIONS: [(&str, &str, &str); 15] = [
     ("Pause", "Escape", "Start"), ("Time of day", "KeyT", "Select"),
     ("i-point list", "Tab", "LeftTrigger"), ("Speedometer", "KeyV", "RightTrigger"),
     ("Recenter camera", "KeyR", "RightThumb"),
+    // The 3DS plane's L and R; they share the shoulder buttons with the lists,
+    // which give way while that plane flies.
+    ("Lean left / barrel roll", "KeyZ", "LeftTrigger"), ("Lean right / barrel roll", "KeyX", "RightTrigger"),
 ];
 
 pub fn binding(save: &crate::save::Save, i: usize) -> [String; 2] {
@@ -51,6 +54,9 @@ pub struct Controls {
     pub speedometer: bool,
     /// Snap the camera back behind the player or plane.
     pub recenter: bool,
+    /// 3DS plane shoulder buttons (held).
+    pub lean_left: bool,
+    pub lean_right: bool,
     // Menu navigation (initial press plus held repeat).
     pub up: bool,
     pub down: bool,
@@ -96,7 +102,7 @@ pub fn read(
         right: kj(&[KeyCode::ArrowRight, KeyCode::KeyD]),
         confirm: kj(&[KeyCode::Enter, KeyCode::Space]),
         back: kj(&[KeyCode::Escape, KeyCode::Backspace]),
-        pad: c.pad, record: edge(12), speedometer: edge(13), recenter: edge(14),
+        pad: c.pad, record: edge(12), speedometer: edge(13), recenter: edge(14), lean_left: held(15), lean_right: held(16),
         ..default()
     };
     if keys.get_just_pressed().next().is_some() || mouse.delta != Vec2::ZERO {
@@ -121,6 +127,7 @@ pub fn read(
         s.jump |= edge(6); s.shoot |= held(6); s.cut |= held(7);
         s.flare |= edge(8); s.board |= edge(9); s.pause |= edge(10) || p.just_pressed(GamepadButton::Start); s.time |= edge(11);
         s.record |= edge(12); s.speedometer |= edge(13); s.recenter |= edge(14);
+        s.lean_left |= held(15); s.lean_right |= held(16);
         s.confirm |= p.just_pressed(GamepadButton::South);
         s.back |= p.just_pressed(GamepadButton::East);
         s.up |= p.just_pressed(GamepadButton::DPadUp);
