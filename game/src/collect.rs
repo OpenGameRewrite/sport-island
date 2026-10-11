@@ -39,6 +39,11 @@ const SETS: &[Set] = &[
     Set { key: "balloons_rocket", table: "wuhu/ffballoon.val.json", class: Class::Rocket, model: "balloonc", radius: 4.8, ring: false, sound: "pwr/race_balloonpop", name: "Freeflight:BALLOONS_PLAIN" },
 ];
 
+/// How far each model reaches below its origin, metres.
+fn bottom(model: &str) -> f32 {
+    match model { "miiring" => 12.3, "gold_ring" => 9.3, "balloonc" => 5.0, "miidoll" => 2.7, _ => 0.0 }
+}
+
 /// A placed collectible: its set, index within the set and pose.
 struct Item { set: usize, index: u16, pose: Transform, stunt: Option<Stunt> }
 
@@ -71,12 +76,14 @@ struct Billboard;
 struct Turn(Vec3);
 #[derive(Component)]
 struct Tally;
+#[derive(Component)]
+struct Hint;
 
 pub fn plugin(app: &mut App) {
     if !pwr::available() { return; }
     app.insert_resource(load())
         .add_systems(OnEnter(AppState::Play), spawn)
-        .add_systems(Update, (show, face_camera, turn, tally).run_if(in_state(AppState::Play)))
+        .add_systems(Update, (show, face_camera, turn, tally, stunt_hint).run_if(in_state(AppState::Play)))
         .add_systems(FixedPostUpdate, pick.run_if(crate::menu::playing));
 }
 
@@ -98,7 +105,15 @@ fn load() -> Items {
                 Some("barrel_roll_right") => Some(Stunt::RollRight),
                 _ => None,
             };
-            items.push(Item { set: s, index: i as u16, pose: pwr::frame(&f), stunt });
+            let mut pose = pwr::frame(&f);
+            // Each placement records its height above the ground or water
+            // below (negative under overhangs). Many sit at or just above the
+            // surface, which would sink the lower half of the model; lift
+            // those so the model rests on the surface.
+            if let Some(h) = o["#8711200"].as_f64().map(|h| h as f32).filter(|h| *h >= 0.0) {
+                pose.translation.y += (bottom(set.model) - h).max(0.0) * SCALE;
+            }
+            items.push(Item { set: s, index: i as u16, pose, stunt });
         }
     }
     Items(items)
@@ -241,6 +256,43 @@ fn tally(
         format!("{} {found}/{total}", texts.pwr(s.name).unwrap_or_else(|| s.key.replace('_', " ")))
     }).collect();
     text.set_if_neq(Text::new(parts.join("   ")));
+    vis.set_if_neq(Visibility::Inherited);
+}
+
+/// The 3DS shows the stunt a ring wants with the Mii's pose inside it; with
+/// no Mii here, name the stunt (and its buttons) as a ring comes up ahead.
+#[allow(clippy::too_many_arguments)]
+fn stunt_hint(
+    mut commands: Commands, font: Res<crate::lang::UiFont>, texts: Res<crate::lang::Texts>, save: Res<Save>, controls: Res<crate::input::Controls>,
+    items: Res<Items>, vehicles: Query<&Vehicle>, planes: Query<&Plane>, pickups: Query<&Pickup>,
+    cam: Single<&GlobalTransform, With<MainCamera>>, mut q: Query<(&mut Text, &mut Visibility), With<Hint>>,
+) {
+    let Ok((mut text, mut vis)) = q.single_mut() else {
+        commands.spawn((
+            Node { position_type: PositionType::Absolute, top: px(132), justify_self: JustifySelf::Center, align_self: AlignSelf::Start, padding: UiRect::axes(px(18), px(6)), border: UiRect::all(px(3)), border_radius: BorderRadius::all(px(999)), ..default() },
+            BackgroundColor(crate::menu::PANEL), BorderColor::all(crate::menu::OUTLINE),
+            Text::new(""), TextFont::from(font.0.clone()).with_font_size(FontSize::Px(24.0)), TextColor(crate::menu::INK),
+            Visibility::Hidden, Hint, DespawnOnExit(AppState::Play),
+        ));
+        return;
+    };
+    let ahead = (flying_class(&save, &vehicles, &planes) == Some(Class::Plane)).then(|| {
+        let (eye, fwd) = (cam.translation(), cam.forward().as_vec3());
+        pickups.iter().filter_map(|p| { let it = &items.0[p.0]; it.stunt.map(|s| (s, it.pose.translation - eye)) })
+            .filter(|(_, to)| to.length() < 2500.0 && to.normalize_or_zero().dot(fwd) > 0.8)
+            .min_by(|a, b| a.1.length_squared().total_cmp(&b.1.length_squared())).map(|(s, _)| s)
+    }).flatten();
+    let Some(stunt) = ahead else { vis.set_if_neq(Visibility::Hidden); return };
+    let key = |i: usize| texts.binding(&crate::input::binding(&save, i)[controls.pad as usize]);
+    let (what, keys) = match stunt {
+        Stunt::LeanLeft => ("ControlsMenu:ROLLLEFT", key(15)),
+        Stunt::LeanRight => ("ControlsMenu:ROLLRIGHT", key(16)),
+        Stunt::Inverted => ("ControlsMenu:INVERT", format!("{} + {}", key(15), key(16))),
+        Stunt::RollLeft => ("ControlsMenu:BARRELROLL", format!("{0} {0} ↺", key(15))),
+        Stunt::RollRight => ("ControlsMenu:BARRELROLL", format!("{0} {0} ↻", key(16))),
+    };
+    let what = texts.pwr(what).unwrap_or_default().replace('\n', " ");
+    text.set_if_neq(Text::new(format!("{what}:  {keys}")));
     vis.set_if_neq(Visibility::Inherited);
 }
 

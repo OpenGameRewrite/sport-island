@@ -106,7 +106,7 @@ fn engine(
     };
     // The add-on plane and jet keep their own engines.
     let name = match crate::vehicles::selected(&save) {
-        Some(crate::vehicles::Kind::Plane) => "pwr/plane_engine",
+        Some(crate::vehicles::Kind::Plane) => "pwr/plane_prop_normal",
         Some(crate::vehicles::Kind::Jet) => "pwr/jet_engine",
         _ => "SE_PLN_ENGINE",
     };

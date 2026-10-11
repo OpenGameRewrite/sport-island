@@ -131,7 +131,7 @@ fn mouse_input(mut m: ResMut<Menu>, mut c: ResMut<Controls>, mut clicks: Message
     if !m.open || m.capturing { return; }
     for click in clicks {
         match *click {
-            Click::Row(i) if m.page != Page::Record => { m.sel = i; c.confirm = true; }
+            Click::Row(i) if m.page != Page::Record => { m.sel = i + if m.page == Page::Controls { m.scroll } else { 0 }; c.confirm = true; }
             Click::Step(-1) => c.left = true, Click::Step(1) => c.right = true, Click::Step(_) => c.back = true,
             Click::Record => { m.page = Page::Record; m.scroll = 0; m.direct_record = false; }
             _ => {}
@@ -201,7 +201,7 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
         Row::Plane => save.plane = cycle(save.plane, 2 + if crate::pwr::available() { crate::vehicles::KINDS.len() as u8 } else { 0 }),
         Row::Livery if crate::vehicles::selected(&save).is_some() => save.favorite = cycle(save.favorite, 12),
         Row::Livery => save.livery = cycle(save.livery, if save.plane == 0 {3} else {2}),
-        Row::Controls if c.confirm => { m.page = Page::Controls; m.sel = 0; }
+        Row::Controls if c.confirm => { m.page = Page::Controls; m.sel = 0; m.scroll = 0; }
         Row::Settings if c.confirm => { m.page = Page::Settings; m.sel = 0; }
         Row::Language => {
             let i = langs.0.iter().position(|l| l.code == texts.code).unwrap_or(0) as u8;
@@ -231,6 +231,8 @@ fn controls_input(mut m: ResMut<Menu>, mut c: ResMut<Controls>, mut save: ResMut
         }
     } else {
         navigate(&mut m.sel, n+1, &c);
+        // Scroll the list just enough to keep the selection on screen.
+        m.scroll = m.scroll.clamp(m.sel.saturating_sub(LINES - 1), m.sel);
         if c.confirm { if m.sel == n { save.bindings.clear(); save.store(); } else { m.capturing = true; } }
     }
     c.confirm = false; c.shoot = false; c.board = false; c.flare = false; c.jump = false;
@@ -275,7 +277,9 @@ fn render(
                 (texts.action(i).to_string(), if m.capturing && m.sel == i {texts.ui(Ui::Waiting).into()} else {format!("{}  /  {}", texts.binding(&pair[0]), texts.binding(&pair[1]))})
             }).collect();
             rows.push((texts.ui(Ui::ResetControls).into(), String::new()));
-            rows
+            // Longer than the panel: show the window that holds the selection.
+            selected = m.sel.checked_sub(m.scroll);
+            rows.into_iter().skip(m.scroll).take(LINES).collect()
         }
         Page::Settings => {
             header.0.set_if_neq(Text::new(texts.ui(Ui::Settings))); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
@@ -409,6 +413,18 @@ mod tests {
         w.resource_mut::<Menu>().page = Page::Main;
         w.trigger(Activate {entity:counter}); w.run_system_once(mouse_input).unwrap();
         assert!(w.resource::<Menu>().page == Page::Main, "counter opens only while paused");
+    }
+    #[test] fn controls_list_scrolls_to_keep_the_selection_visible() {
+        let mut w = World::new();
+        w.insert_resource(Menu {open:true, page:Page::Controls, ..default()}); w.init_resource::<Save>();
+        w.init_resource::<ButtonInput<KeyCode>>(); w.init_resource::<ButtonInput<MouseButton>>();
+        let rows = crate::input::ACTIONS.len() + 1;
+        for _ in 0..rows - 1 { w.insert_resource(Controls {down:true,..default()}); w.run_system_once(controls_input).unwrap(); }
+        let m = w.resource::<Menu>();
+        assert_eq!(m.sel, rows - 1);
+        assert!(m.scroll + LINES > m.sel && m.scroll <= m.sel, "selection {} outside rows {}..{}", m.sel, m.scroll, m.scroll + LINES);
+        w.insert_resource(Controls {down:true,..default()}); w.run_system_once(controls_input).unwrap();
+        assert_eq!((w.resource::<Menu>().sel, w.resource::<Menu>().scroll), (0, 0), "wraps back to the top");
     }
     #[test] fn navigation_and_record_pages_are_bounded() {
         let mut sel = 0; let c = Controls { down: true, ..default() };

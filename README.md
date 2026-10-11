@@ -37,10 +37,13 @@ sensitivity, ground assist, pitch inversion, a speedometer and fullscreen; **Con
 | Flare | F | Y / Triangle |
 | Board / parachute | E | X / Square |
 | Pause | Escape | Start |
-| Time of day | T | Back / Select |
-| i-point list | Tab | LB / L1 |
-| Speedometer | V | RB / R1 |
+| Time of day | T | — (pause menu) |
+| i-point list | Tab | — (pause menu) |
+| Speedometer | V | — (Settings) |
 | Recenter camera | R | RS / R3 (right stick click) |
+
+On a gamepad the time of day, i-point list and speedometer are unbound by
+default so they never clash with flying; **Controls** can give them buttons.
 
 Pull back on the stick (S) to take off from the water. Boost and slowing are
 temporary impulses: release and press again to repeat them. The optional
@@ -85,9 +88,12 @@ you fly it: 60 Gold Rings for the gliders, 60 Stunt Rings for the plane and jet
 (fly through while leaning, upside down or barrel-rolling as the ring asks;
 spinning rings want a roll that way) and 60 Mii Trophies for the rocket belts,
 plus 40 balloons each. The counts show under the i-point counter while you
-fly, all of them are listed at the end of the i-point list (Tab / LB), and they
-are saved. The 3DS shows your Mii's face inside each Stunt Ring, tilted to hint
-at the stunt; there is no Mii here, so the rings are left open. Shared i-points keep the Wii wording; build with
+fly, all of them are listed at the end of the i-point list (Tab, or the pause menu), and they
+are saved. The 3DS shows your Mii inside each Stunt Ring, posed to show the
+stunt; there is no Mii here, so the rings are open and the stunt it asks for
+(and its buttons) appears at the top of the screen as one comes up ahead.
+Collectibles placed right at the ground or water are lifted to rest on it
+rather than sink half into it. Shared i-points keep the Wii wording; build with
 `--features pwr-text` to read the 3DS wording instead.
 
 ## Work in progress

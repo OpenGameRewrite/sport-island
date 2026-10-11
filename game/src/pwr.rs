@@ -8,7 +8,7 @@ use crate::collide::{Collision, Platform};
 use crate::ipoint::{IPointDef, IPoints, Marker, MarkerFade};
 use bevy::math::Affine3A;
 use crate::AppState;
-use bevy::gltf::GltfMaterialExtras;
+use bevy::gltf::{GltfMaterialExtras, GltfMaterialName};
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::world_serialization::WorldInstanceReady;
@@ -250,9 +250,10 @@ pub fn favorites() -> Vec<String> {
 #[allow(clippy::too_many_arguments)]
 fn convert_materials(
     mut commands: Commands,
-    q: Query<(Entity, &MeshMaterial3d<StandardMaterial>, Option<&GltfMaterialExtras>)>,
+    q: Query<(Entity, &MeshMaterial3d<StandardMaterial>, Option<&GltfMaterialExtras>, Option<&GltfMaterialName>)>,
     standard: Res<Assets<StandardMaterial>>,
-    images: Res<Assets<Image>>,
+    mut images: ResMut<Assets<Image>>,
+    mut flame_mask: Local<Option<Handle<Image>>>,
     globals: Res<crate::gx::GxGlobals>,
     save: Res<crate::save::Save>,
     assets: Res<AssetServer>,
@@ -261,7 +262,7 @@ fn convert_materials(
     mut scrolling: ResMut<Scrolling>,
     mut cache: Local<HashMap<(AssetId<StandardMaterial>, usize), Handle<crate::gx::GxMaterial>>>,
 ) {
-    for (e, handle, extras) in &q {
+    for (e, handle, extras, name) in &q {
         let extras: Value = extras.and_then(|x| serde_json::from_str(&x.value).ok()).unwrap_or(Value::Null);
         if !extras["gx"].is_null() { continue; }
         let Some(m) = standard.get(&handle.0) else { continue };
@@ -277,12 +278,20 @@ fn convert_materials(
                 _ => m.base_color_texture.clone(),
             };
             let alpha = match m.alpha_mode {
+                // The extraction makes every exhaust additive; the jet's flame
+                // card has no material of its own and blends normally.
+                _ if name.is_some_and(|n| n.0 == "jet_efx4.tex") => AlphaMode::Blend,
                 _ if extras["blend"] == "add" => AlphaMode::Add,
                 // Many 3DS materials blend by alpha with depth writes on but are
                 // fully opaque; drawn as transparent they sort badly against themselves.
                 AlphaMode::Blend if m.base_color_texture.as_ref().and_then(|t| images.get(t)).is_some_and(opaque) => AlphaMode::Opaque,
                 a => a,
             };
+            // The Turbo Jet's exhaust cones: streaks tinted and faded into a flame.
+            if name.is_some_and(|n| n.0.starts_with("mat_jet")) {
+                let mask = flame_mask.get_or_insert_with(|| images.add(flame_fade())).clone();
+                return gx.add(flame(texture, mask, globals.0.clone()));
+            }
             let mut mat = crate::gx::textured(texture, alpha, globals.0.clone());
             // The painted liveries come out upside down against the model's UVs.
             if livery.is_some() { mat.set_srt(0, [1.0, -1.0, 0.0, 0.0, 0.0]); }
@@ -293,6 +302,34 @@ fn convert_materials(
         }
         commands.entity(e).remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(h));
     }
+}
+
+/// The jet exhaust as the 3DS combines it: the scrolling streak texture times
+/// an orange colour (doubled), its alpha faded by a soft mask.
+fn flame(streaks: Option<Handle<Image>>, mask: Handle<Image>, globals: Handle<bevy::render::storage::ShaderBuffer>) -> crate::gx::GxMaterial {
+    let mut m = crate::gx::textured(streaks, AlphaMode::Blend, globals);
+    // Unlit: TEXC × KONST ×2 and TEXA, then the alpha times the mask's.
+    m.tev.stages[0] = UVec4::new(15 << 12 | 8 << 8 | 14 << 4 | 15 | 1 << 19 | 1 << 20, 7 << 13 | 7 << 10 | 7 << 7 | 4 << 4 | 1 << 19, 1 << 6 | 7 << 7, 12);
+    m.tev.stages[1] = UVec4::new(15 << 12 | 15 << 8 | 15 << 4 | 1 << 19, 7 << 13 | 0 << 10 | 4 << 7 | 7 << 4 | 1 << 19, 1 | 1 << 3 | 1 << 6 | 7 << 7, 0);
+    m.tev.konst[0] = Vec4::new(1.0, 0.5, 0.25, 1.0);
+    m.tev.texgen[1] = UVec4::new(5, 0, 0, 0);
+    [m.tev.texmtx[2], m.tev.texmtx[3]] = crate::gx::tex_mtx([1.0, 1.0, 0.0, 0.0, 0.0]);
+    m.tev.chan.z = 2;
+    m.t1 = Some(mask);
+    m
+}
+
+/// A soft oval falling off from the middle of the exhaust's texture space,
+/// in place of the 3DS game's own mask (which the extraction does not keep).
+fn flame_fade() -> Image {
+    const N: u32 = 32;
+    let data = (0..N * N).flat_map(|i| {
+        let (u, v) = (((i % N) as f32 + 0.5) / N as f32, ((i / N) as f32 + 0.5) / N as f32);
+        let a = 0.65 * (-((u - 0.6) / 0.25).powi(2) - ((v - 0.47) / 0.14).powi(2)).exp();
+        [255, 255, 255, (a * 255.0) as u8]
+    }).collect();
+    Image::new(bevy::render::render_resource::Extent3d { width: N, height: N, depth_or_array_layers: 1 }, bevy::render::render_resource::TextureDimension::D2, data,
+        bevy::render::render_resource::TextureFormat::Rgba8Unorm, bevy::asset::RenderAssetUsages::RENDER_WORLD)
 }
 
 /// Whether every texel of an 8-bit RGBA image is fully opaque.

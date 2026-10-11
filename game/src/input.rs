@@ -5,17 +5,19 @@ use bevy::prelude::*;
 
 /// Actions shared by walking and flying. Menu navigation and look sticks remain
 /// available while rebinding, so a bad binding cannot trap the user in a menu.
+/// An empty binding is unbound: the time of day, i-point list and speedometer
+/// have no gamepad button by default (the pause menu reaches them), so they
+/// never clash with flying.
 pub const ACTIONS: [(&str, &str, &str); 17] = [
     ("Left", "KeyA", "DPadLeft"), ("Right", "KeyD", "DPadRight"),
     ("Forward / nose down", "KeyW", "DPadUp"), ("Back / nose up", "KeyS", "DPadDown"),
     ("Run / boost impulse", "ShiftLeft", "RightTrigger2"), ("Slow impulse", "ControlLeft", "LeftTrigger2"),
     ("Jump / shoot", "Space", "South"), ("Cut engine", "KeyC", "East"),
     ("Flare", "KeyF", "North"), ("Board / eject", "KeyE", "West"),
-    ("Pause", "Escape", "Start"), ("Time of day", "KeyT", "Select"),
-    ("i-point list", "Tab", "LeftTrigger"), ("Speedometer", "KeyV", "RightTrigger"),
+    ("Pause", "Escape", "Start"), ("Time of day", "KeyT", ""),
+    ("i-point list", "Tab", ""), ("Speedometer", "KeyV", ""),
     ("Recenter camera", "KeyR", "RightThumb"),
-    // The 3DS plane's L and R; they share the shoulder buttons with the lists,
-    // which give way while that plane flies.
+    // The 3DS plane's L and R.
     ("Lean left / barrel roll", "KeyZ", "LeftTrigger"), ("Lean right / barrel roll", "KeyX", "RightTrigger"),
 ];
 
@@ -25,7 +27,7 @@ pub fn binding(save: &crate::save::Save, i: usize) -> [String; 2] {
 }
 
 pub fn label(raw: &str) -> String {
-    match raw { "South" => "A / Cross".into(), "East" => "B / Circle".into(), "West" => "X / Square".into(), "North" => "Y / Triangle".into(), "RightTrigger2" => "RT / R2".into(), "LeftTrigger2" => "LT / L2".into(), "LeftTrigger" => "LB / L1".into(), "RightTrigger" => "RB / R1".into(), "RightThumb" => "RS / R3".into(), "LeftThumb" => "LS / L3".into(), "Select" => "Back / Select".into(), "DPadLeft" => "D-pad left".into(), "DPadRight" => "D-pad right".into(), "DPadUp" => "D-pad up".into(), "DPadDown" => "D-pad down".into(), "ShiftLeft" => "Left Shift".into(), "ControlLeft" => "Left Ctrl".into(), _ => raw.strip_prefix("Key").unwrap_or(raw).into() }
+    match raw { "" => "—".into(), "South" => "A / Cross".into(), "East" => "B / Circle".into(), "West" => "X / Square".into(), "North" => "Y / Triangle".into(), "RightTrigger2" => "RT / R2".into(), "LeftTrigger2" => "LT / L2".into(), "LeftTrigger" => "LB / L1".into(), "RightTrigger" => "RB / R1".into(), "RightThumb" => "RS / R3".into(), "LeftThumb" => "LS / L3".into(), "Select" => "Back / Select".into(), "DPadLeft" => "D-pad left".into(), "DPadRight" => "D-pad right".into(), "DPadUp" => "D-pad up".into(), "DPadDown" => "D-pad down".into(), "ShiftLeft" => "Left Shift".into(), "ControlLeft" => "Left Ctrl".into(), _ => raw.strip_prefix("Key").unwrap_or(raw).into() }
 }
 
 const BUTTONS: [GamepadButton; 19] = [GamepadButton::South, GamepadButton::East, GamepadButton::North, GamepadButton::West, GamepadButton::C, GamepadButton::Z, GamepadButton::LeftTrigger, GamepadButton::LeftTrigger2, GamepadButton::RightTrigger, GamepadButton::RightTrigger2, GamepadButton::Select, GamepadButton::Start, GamepadButton::Mode, GamepadButton::LeftThumb, GamepadButton::RightThumb, GamepadButton::DPadUp, GamepadButton::DPadDown, GamepadButton::DPadLeft, GamepadButton::DPadRight];

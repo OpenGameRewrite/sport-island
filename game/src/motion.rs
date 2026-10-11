@@ -169,7 +169,10 @@ fn loop_names(kind: Kind) -> &'static [&'static str] {
         Kind::PGlider => &["pwr/glider_flutter", "pwr/pglider_bicyclefreerun", "pwr/race_thermalwind"],
         Kind::Rocket => &["pwr/rocket_jet", "pwr/rocket_wind"],
         Kind::SuperRocket => &["pwr/superrocket_jet", "pwr/rocket_wind"],
-        Kind::Plane => &["pwr/plane_engine"],
+        // The plane loads both a propeller and an engine loop; the engine
+        // file's loop points do not meet (it clicks every lap), so the
+        // propeller, which loops cleanly, carries the sound.
+        Kind::Plane => &["pwr/plane_prop_normal"],
         Kind::Jet => &["pwr/jet_engine"],
     }
 }

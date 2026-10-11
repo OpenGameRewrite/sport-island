@@ -518,7 +518,7 @@ pub fn plugin(app: &mut App) {
 }
 
 /// While a 3DS plane flies, its shoulder buttons lean instead of opening the
-/// i-point list or toggling the speedometer (they share LB / RB by default).
+/// i-point list or toggling the speedometer, if those share the same buttons.
 fn shoulders(mut c: ResMut<Controls>, vehicles: Query<&Vehicle>) {
     if (c.lean_left || c.lean_right) && vehicles.iter().any(|v| v.kind.plane()) {
         c.record = false;
