@@ -27,6 +27,18 @@ pub fn plugin(app: &mut App) {
     if let Some(at) = std::env::var("SI_SHOOT").ok().and_then(|s| s.parse::<f32>().ok()) {
         app.add_systems(PreUpdate, (move |time: Res<Time>, mut c: ResMut<crate::input::Controls>| if time.elapsed_secs() > at { c.shoot = true; }).after(crate::input::read));
     }
+    // SI_HOLD="x y boost slow left right" holds the stick, triggers and shoulders (with SI_FLY).
+    if let Ok(hold) = std::env::var("SI_HOLD") {
+        let v: Vec<f32> = hold.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+        let at = |i: usize| v.get(i).copied().unwrap_or(0.0);
+        let (stick, boost, slow, lean) = (Vec2::new(at(0), at(1)), at(2), at(3), (at(4) > 0.5, at(5) > 0.5));
+        app.add_systems(PreUpdate, (move |mut c: ResMut<crate::input::Controls>| { c.stick = stick; c.boost = boost; c.slow = slow; (c.lean_left, c.lean_right) = lean; }).after(crate::input::read));
+    }
+    // SI_AT="x y z" drops the player there once play starts.
+    if let Some(at) = std::env::var("SI_AT").ok().map(|s| s.split_whitespace().filter_map(|v| v.parse().ok()).collect::<Vec<f32>>()).filter(|v| v.len() == 3) {
+        let at = Vec3::new(at[0], at[1], at[2]);
+        app.add_systems(Update, move |mut done: Local<bool>, mut q: Query<(&mut Transform, &mut crate::player::Player)>| for (mut t, mut p) in &mut q { if !std::mem::replace(&mut *done, true) { t.translation = at; p.vel = Vec3::ZERO; } });
+    }
     // SI_EFFECT=name spawns that particle effect 200 units ahead of the camera every second.
     if let Ok(name) = std::env::var("SI_EFFECT") {
         app.add_systems(FixedUpdate, move |mut commands: Commands, time: Res<Time>, lib: Res<crate::particles::ParticleLib>, cam: Single<&GlobalTransform, With<crate::world::MainCamera>>, mut last: Local<f32>| {
@@ -85,7 +97,7 @@ fn traffic_check(time: Res<Time<Real>>, bones: Query<(&Name, &GlobalTransform)>,
 fn smoke(
     time: Res<Time<Real>>, state: Res<State<crate::AppState>>, mode: Res<State<crate::Mode>>,
     mut c: ResMut<crate::input::Controls>, mut phase: Local<u8>, mut paused_at: Local<Option<Vec3>>, mut boarded_at: Local<f32>,
-    plane: Query<&Transform, With<crate::plane::Plane>>, menu: Res<crate::menu::Menu>,
+    plane: Query<&Transform, With<crate::plane::Flying>>, menu: Res<crate::menu::Menu>,
     markers: Query<&crate::ipoint::Marker>,
     names: Query<&Name>,
 ) {
@@ -175,7 +187,7 @@ pub fn log_state(
     mode: Res<State<crate::Mode>>,
     state: Res<State<crate::AppState>>,
     player: Query<&Transform, With<crate::player::Player>>,
-    planes: Query<&Transform, With<crate::plane::Plane>>,
+    planes: Query<&Transform, With<crate::plane::Flying>>,
     cam: Query<&Transform, With<crate::world::MainCamera>>,
     mut last: Local<f32>,
 ) {
@@ -184,29 +196,33 @@ pub fn log_state(
     }
     *last = time.elapsed_secs();
     info!(
-        "t={:.1} state={:?} mode={:?} players={:?} planes={:?} cam={:?}",
+        "t={:.1} state={:?} mode={:?} players={:?} planes={:?} up={:?} cam={:?}",
         time.elapsed_secs(),
         state.get(),
         mode.get(),
         player.iter().map(|t| t.translation).collect::<Vec<_>>(),
         planes.iter().map(|t| t.translation).collect::<Vec<_>>(),
+        planes.iter().map(|t| (t.rotation * Vec3::Y * 100.0).round() / 100.0).collect::<Vec<_>>(),
         cam.iter().map(|t| t.translation).collect::<Vec<_>>()
     );
 }
 
-/// `SI_MODEL=name[:scene]` shows one converted model in isolation (`SI_DIST` = camera distance).
+/// `SI_MODEL=name[:scene]` shows one converted model in isolation (`SI_DIST` = camera distance,
+/// `SI_VIEW` = camera yaw in degrees). A name with a slash is a path under the assets.
 fn inspect_model(mut commands: Commands, assets: Res<AssetServer>) {
     let spec = std::env::var("SI_MODEL").unwrap();
     let (name, scene) = spec.split_once(':').map_or((spec.as_str(), 0), |(n, s)| (n, s.parse().unwrap_or(0)));
     let dist: f32 = std::env::var("SI_DIST").ok().and_then(|s| s.parse().ok()).unwrap_or(100.0);
+    let yaw: f32 = std::env::var("SI_VIEW").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(31.0).to_radians();
     let center = Vec3::new(0.0, 20000.0, 0.0);
+    let path = if name.contains('/') { format!("{name}.glb") } else { format!("models/{name}.glb") };
     commands
-        .spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(scene).from_asset(format!("models/{name}.glb")))), Transform::from_translation(center)))
+        .spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(scene).from_asset(path))), Transform::from_translation(center)))
         .observe(crate::player::no_culling)
         .observe(crate::plane::attach_propeller);
     commands.spawn((
         Camera3d::default(),
         Camera { order: 5, ..default() },
-        Transform::from_translation(center + Vec3::new(dist * 0.6, dist * 0.4, dist)).looking_at(center, Vec3::Y),
+        Transform::from_translation(center + Vec3::new(yaw.sin(), 0.35, yaw.cos()) * dist).looking_at(center, Vec3::Y),
     ));
 }

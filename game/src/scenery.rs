@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::world_serialization::WorldInstanceReady;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::{ipoint::{IPoints, Marker}, plane::{Plane, Shot}, sound::{Sound, Sounds}, world::TimeOfDay};
+use crate::{ipoint::{IPoints, Marker}, plane::{Flying as Plane, Shot}, sound::{Sound, Sounds}, world::TimeOfDay};
 
 #[derive(Deserialize, Serialize, Clone, PartialEq)]
 pub struct Placement {
@@ -139,7 +139,9 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut graphs: ResMut<As
             10 => ("pole", None, 1.0, None),
             11 | 12 | 18 | 19 => ("flag_a", None, 1.0, None),
             13 | 15 | 24 | 25 => ("flag_b", None, 1.0, None),
-            33 | 35 => ("flag_c", None, 1.0, None),
+            // 33 marks the nine greens on the golf island. Its real model is
+            // unknown; the checkered banner it was mapped to lay 164 m long
+            // across the greens and the sea, so nothing is drawn there.
             14 => ("tee", None, 1.0, None),
             16 => ("car", None, 1.0, None),
             20 | 22 | 23 => ("balloon", Some(0), 1.0, None),

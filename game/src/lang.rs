@@ -23,13 +23,25 @@ pub struct UiFont(pub FontSource);
 pub struct Texts {
     pub code: String,
     map: HashMap<u32, String>,
+    /// Pilotwings Resort strings by key, when that add-on was extracted.
+    pwr: HashMap<String, String>,
 }
+
+/// Mii favourite colours in the add-on's `colortex.val` order.
+pub const FAVORITES: [Ui; 12] = [Ui::Red, Ui::Orange, Ui::Yellow, Ui::YellowGreen, Ui::Green, Ui::Blue, Ui::SkyBlue, Ui::Pink, Ui::Purple, Ui::Brown, Ui::White, Ui::Black];
 
 impl Texts {
     pub fn load(code: &str) -> Self {
         let raw: HashMap<String, String> = crate::read_json(&format!("text/{code}.json"));
         let map = raw.into_iter().filter_map(|(k, v)| Some((u32::from_str_radix(&k, 16).ok()?, v))).collect();
-        Self { code: code.to_string(), map }
+        let pwr = std::fs::read(crate::asset_dir().join(format!("pwr/text/{code}.json"))).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        Self { code: code.to_string(), map, pwr }
+    }
+
+    /// A Pilotwings Resort string; its inline icon escapes become the info glyph.
+    pub fn pwr(&self, key: &str) -> Option<String> {
+        let s = self.pwr.get(key)?;
+        Some(s.replace("\\ipoint_icon_small", "ⓘ "))
     }
 
     /// A BMG message with icon glyphs replaced by readable labels.
@@ -103,6 +115,8 @@ pub enum Ui {
     Red, White, Yellow, Orange, Blue, Space, LeftShift, LeftCtrl, MouseLeft, MouseRight, MouseMiddle,
     DLeft, DRight, DUp, DDown,
     South, East, West, North, Escape, Select, RightStick, Mouse, Fullscreen, GroundAssist,
+    YellowGreen, Green, SkyBlue, Pink, Purple, Brown, Black,
+    PlaneHandling, Original, WiiStyle,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -162,6 +176,16 @@ const UI: &[[&str; 5]] = &[
     ["Mouse", "Souris", "Maus", "Ratón", "Mouse"],
     ["Fullscreen", "Plein écran", "Vollbild", "Pantalla completa", "Schermo intero"],
     ["Ground assist", "Aide près du sol", "Bodenhilfe", "Ayuda cerca del suelo", "Aiuto vicino al suolo"],
+    ["Light green", "Vert clair", "Hellgrün", "Verde claro", "Verde chiaro"],
+    ["Green", "Vert", "Grün", "Verde", "Verde"],
+    ["Light blue", "Bleu clair", "Hellblau", "Azul claro", "Azzurro"],
+    ["Pink", "Rose", "Rosa", "Rosa", "Rosa"],
+    ["Purple", "Violet", "Lila", "Morado", "Viola"],
+    ["Brown", "Marron", "Braun", "Marrón", "Marrone"],
+    ["Black", "Noir", "Schwarz", "Negro", "Nero"],
+    ["3DS plane handling", "Pilotage des avions 3DS", "Steuerung der 3DS-Flugzeuge", "Manejo de los aviones de 3DS", "Comandi degli aerei 3DS"],
+    ["Original", "Original", "Original", "Original", "Originale"],
+    ["Wii-style", "Style Wii", "Wii-Stil", "Estilo Wii", "Stile Wii"],
 ];
 
 const ACTIONS: &[[&str; 5]] = &[
@@ -178,6 +202,8 @@ const ACTIONS: &[[&str; 5]] = &[
     ["i-point list", "Liste des points ⓘ", "ⓘ-Punkteliste", "Lista de puntos ⓘ", "Elenco punti ⓘ"],
     ["Speedometer", "Indicateur de vitesse", "Geschwindigkeitsanzeige", "Velocímetro", "Indicatore di velocità"],
     ["Recenter camera", "Recentrer la caméra", "Kamera zentrieren", "Centrar cámara", "Centra la telecamera"],
+    ["Lean left / barrel roll", "Incliner à gauche / tonneau", "Links neigen / Fassrolle", "Inclinar a la izquierda / tonel", "Inclina a sinistra / tonneau"],
+    ["Lean right / barrel roll", "Incliner à droite / tonneau", "Rechts neigen / Fassrolle", "Inclinar a la derecha / tonel", "Inclina a destra / tonneau"],
 ];
 
 pub fn plugin(app: &mut App) {

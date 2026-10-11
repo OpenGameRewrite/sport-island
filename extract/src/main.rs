@@ -9,6 +9,7 @@ mod gltf;
 mod kcl;
 mod mdl;
 mod pmp;
+mod pwr;
 mod sound;
 mod tex;
 
@@ -83,6 +84,10 @@ fn main() -> Result<()> {
         }
     }
     let want = |what: &str| only.as_deref().is_none_or(|o| o.starts_with(what));
+    // The optional Pilotwings Resort add-on comes from a second, 3DS image.
+    if pwr::is_3ds(&image) {
+        return pwr::extract(&image, &out);
+    }
     let mut disc = Disc::open(&image)?;
     if !disc.game_id.starts_with("RZT") {
         bail!("{} is {}, expected Wii Sports Resort (RZTxxx)", image.display(), disc.game_id);

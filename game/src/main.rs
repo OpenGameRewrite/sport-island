@@ -2,6 +2,7 @@ use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use std::path::PathBuf;
 
+mod collect;
 mod collide;
 mod debug;
 mod gx;
@@ -9,12 +10,15 @@ mod input;
 mod ipoint;
 mod lang;
 mod menu;
+mod motion;
 mod particles;
 mod plane;
 mod player;
+mod pwr;
 mod save;
 mod scenery;
 mod sound;
+mod vehicles;
 mod world;
 
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -67,6 +71,6 @@ fn main() {
         .init_state::<AppState>()
         .init_state::<Mode>()
         .add_plugins((save::plugin, lang::plugin, input::plugin, collide::plugin, gx::plugin, particles::plugin, world::plugin))
-        .add_plugins((player::plugin, plane::plugin, ipoint::plugin, menu::plugin, scenery::plugin, sound::plugin, debug::plugin))
+        .add_plugins((player::plugin, plane::plugin, ipoint::plugin, menu::plugin, scenery::plugin, sound::plugin, debug::plugin, pwr::plugin, vehicles::plugin, motion::plugin, collect::plugin))
         .run();
 }

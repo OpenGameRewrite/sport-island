@@ -25,6 +25,9 @@ const ELEVATOR: f32 = 0.0024;
 const THRUST: f32 = 0.035;
 const BOOST: f32 = 0.03;
 const SLOW: f32 = -0.02;
+// The add-on Turbo Jet: twice the engine and a sustained turbo.
+const JET_THRUST: f32 = 0.07;
+const TURBO: f32 = 0.06;
 // Local-axis drag (x, y, z) while stalled and while flying.
 const DRAG_STALL: Vec3 = Vec3::new(0.5, 0.5, 0.01);
 const DRAG_FLY: Vec3 = Vec3::new(0.015, 0.015, 0.005);
@@ -35,6 +38,11 @@ const LEVEL_TORQUE: f32 = 0.001;
 const ANGULAR_DAMPING: f32 = 0.99;
 // The original plane's body setup uses unit mass and diagonal inertia 10/10/10.
 const INERTIA: Vec3 = Vec3::splat(10.0);
+
+/// Whatever the player is flying (the Wii plane or an add-on vehicle);
+/// other modules use it to find the aircraft.
+#[derive(Component)]
+pub struct Flying;
 
 #[derive(Component)]
 pub struct Plane {
@@ -64,6 +72,11 @@ pub struct Plane {
     contact_ref: Vec3,
     /// Settings multiplier for the ground assistance (1 = original).
     pub ground_assist: f32,
+    /// Pilotwings Resort Turbo Jet: stronger engine and a turbo meter (0..1)
+    /// that sustained boost drains and rest refills.
+    pub jet: bool,
+    pub turbo: f32,
+    pub burning: bool,
 }
 
 #[derive(Resource)]
@@ -73,9 +86,13 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0 }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0, jet: false, turbo: 1.0, burning: false }
     }
     /// One original-rate physics tick, independent of rendering and collision.
+    /// Displayed bank (radians, right positive) on top of the flight model.
+    pub fn bank(&self) -> f32 { self.bank }
+
+
     #[cfg(test)]
     fn step(&mut self, t: &mut Transform, c: &Controls, invert_pitch: bool) {
         self.step_with_surface(t, c, invert_pitch, None);
@@ -113,7 +130,16 @@ impl Plane {
         self.boost_held = held;
         self.boost_force = ((self.boost_force + if self.boost_left > 0 { 1.0 } else { 0.0 }) * 0.993).min(1.0);
         self.boost_left = self.boost_left.saturating_sub(1);
-        force += z * (THRUST * self.throttle + self.boost_force * if self.boost_sign >= 0.0 { BOOST } else { SLOW });
+        if self.jet {
+            // Held boost burns the turbo meter (about 3 s full), rest refills it (about 6 s).
+            let burning = c.boost > 0.15 && self.turbo > 0.0;
+            self.burning = burning;
+            self.turbo = if burning { (self.turbo - 1.0 / 180.0).max(0.0) } else { (self.turbo + 1.0 / 360.0).min(1.0) };
+            let slow = if self.boost_sign < 0.0 { self.boost_force * SLOW } else { 0.0 };
+            force += z * (JET_THRUST * self.throttle + if burning { TURBO } else { 0.0 } + slow);
+        } else {
+            force += z * (THRUST * self.throttle + self.boost_force * if self.boost_sign >= 0.0 { BOOST } else { SLOW });
+        }
 
         // Flying factor: rises slowly with airspeed, drops immediately.
         let target = (self.throttle * ((fwd - 0.5) / 0.5).clamp(0.0, 1.0)).powi(4);
@@ -330,14 +356,26 @@ pub fn board(
             let mut plane = Plane::new(pose, speed);
             if !first.boarded { plane.flight = 0.0; plane.water_strength = 1.0; plane.water_release = 1.0; }
             first.boarded = true;
+            let addon = crate::vehicles::selected(&save);
+            plane.jet = addon == Some(crate::vehicles::Kind::Jet);
             commands
                 .spawn((
                     plane,
+                    Flying,
                     pose,
                     Visibility::default(),
                 ))
-                .with_children(|p| {
-                    p.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(model_path(save.plane)))), PlaneModel)).observe(attach_propeller).observe(mark_paint).observe(attach_animation);
+                .with_children(|p| match addon {
+                    // Pilotwings Resort's plane and jet fly like the Wii plane. Their
+                    // models face -Z, sit on their base and use 3DS metres.
+                    Some(kind) => {
+                        let model = format!("pwr/models/{}_lod1.glb", kind.container());
+                        let fit = Transform::from_xyz(0.0, -6.0, -8.5).with_rotation(Quat::from_rotation_y(std::f32::consts::PI)).with_scale(Vec3::splat(crate::pwr::SCALE));
+                        p.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(model))), fit, PlaneModel, crate::motion::Parts::new(kind))).observe(crate::motion::collect);
+                    }
+                    None => {
+                        p.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(model_path(save.plane)))), PlaneModel)).observe(attach_propeller).observe(mark_paint).observe(attach_animation);
+                    }
                 });
             *player.2 = Visibility::Hidden;
             next.set(Mode::Fly);
@@ -413,6 +451,7 @@ fn despawn_plane(mut commands: Commands, planes: Query<Entity, With<Plane>>) {
         commands.entity(e).despawn();
     }
 }
+
 
 /// The propeller is a separate model mounted on the `propeller_point` bone.
 pub(crate) fn attach_propeller(ev: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&Name>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<crate::gx::GxMaterial>>, globals: Res<crate::gx::GxGlobals>) {
@@ -516,11 +555,16 @@ fn tint_bullets(cache: Res<crate::gx::GxMaterials>, mut materials: ResMut<Assets
 fn speedometer_spawn(mut commands: Commands, font: Res<crate::lang::UiFont>) {
     commands.spawn((Node { position_type: PositionType::Absolute, bottom: px(24), right: px(24), padding: UiRect::axes(px(16), px(10)), border: UiRect::all(px(3)), border_radius: BorderRadius::all(px(16)), ..default() }, BackgroundColor(crate::menu::PANEL), BorderColor::all(crate::menu::OUTLINE), Text::new(""), TextFont::from(font.0.clone()).with_font_size(FontSize::Px(19.0)), TextColor(crate::menu::INK), Speedometer));
 }
-fn speedometer(save: Res<Save>, texts: Res<crate::lang::Texts>, planes: Query<&Plane>, mut text: Single<(&mut Text, &mut Visibility), With<Speedometer>>) {
-    let Ok(p) = planes.single() else { *text.1 = Visibility::Hidden; return; };
-    *text.1 = if save.speedometer {Visibility::Inherited} else {Visibility::Hidden};
+fn speedometer(save: Res<Save>, texts: Res<crate::lang::Texts>, planes: Query<&Plane>, vehicles: Query<&crate::vehicles::Vehicle>, mut text: Single<(&mut Text, &mut Visibility), With<Speedometer>>) {
     use crate::lang::Ui;
-    text.0.set_if_neq(Text::new(format!("{}: {:.0} {}\n{}: {:.0}%\n{}: {:.0}%", texts.ui(Ui::Speed), p.vel.length()*60.0, texts.ui(Ui::Units), texts.ui(Ui::Engine), p.throttle*100.0, texts.ui(if p.boost_sign >= 0.0 {Ui::Boost} else {Ui::Slow}), p.boost_force*100.0)));
+    let readout = if let Ok(p) = planes.single() {
+        format!("{}: {:.0} {}\n{}: {:.0}%\n{}: {:.0}%", texts.ui(Ui::Speed), p.vel.length()*60.0, texts.ui(Ui::Units), texts.ui(Ui::Engine), p.throttle*100.0, texts.ui(if p.boost_sign >= 0.0 {Ui::Boost} else {Ui::Slow}), p.boost_force*100.0)
+    } else if let Ok(v) = vehicles.single() {
+        // In the Wii planes' units; the turbo meter has its own gauge.
+        format!("{}: {:.0} {}", texts.ui(Ui::Speed), v.body.vel.length()*crate::pwr::SCALE, texts.ui(Ui::Units))
+    } else { *text.1 = Visibility::Hidden; return; };
+    *text.1 = if save.speedometer {Visibility::Inherited} else {Visibility::Hidden};
+    text.0.set_if_neq(Text::new(readout));
 }
 fn projectile_billboards(cam: Single<&GlobalTransform, With<MainCamera>>, parents: Query<&GlobalTransform>, mut sprites: Query<(Option<&ChildOf>, &mut Transform), With<ProjectileSprite>>) {
     for (parent, mut t) in &mut sprites {
@@ -738,6 +782,7 @@ fn trails(time: Res<Time>, fixed: Res<Time<Fixed>>, plane: Single<(&Plane, &Tran
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     #[test]
     fn chase_camera_turns_over_only_well_past_vertical() {

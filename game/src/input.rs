@@ -5,15 +5,20 @@ use bevy::prelude::*;
 
 /// Actions shared by walking and flying. Menu navigation and look sticks remain
 /// available while rebinding, so a bad binding cannot trap the user in a menu.
-pub const ACTIONS: [(&str, &str, &str); 15] = [
+/// An empty binding is unbound: the time of day, i-point list and speedometer
+/// have no gamepad button by default (the pause menu reaches them), so they
+/// never clash with flying.
+pub const ACTIONS: [(&str, &str, &str); 17] = [
     ("Left", "KeyA", "DPadLeft"), ("Right", "KeyD", "DPadRight"),
     ("Forward / nose down", "KeyW", "DPadUp"), ("Back / nose up", "KeyS", "DPadDown"),
     ("Run / boost impulse", "ShiftLeft", "RightTrigger2"), ("Slow impulse", "ControlLeft", "LeftTrigger2"),
     ("Jump / shoot", "Space", "South"), ("Cut engine", "KeyC", "East"),
     ("Flare", "KeyF", "North"), ("Board / eject", "KeyE", "West"),
-    ("Pause", "Escape", "Start"), ("Time of day", "KeyT", "Select"),
-    ("i-point list", "Tab", "LeftTrigger"), ("Speedometer", "KeyV", "RightTrigger"),
+    ("Pause", "Escape", "Start"), ("Time of day", "KeyT", ""),
+    ("i-point list", "Tab", ""), ("Speedometer", "KeyV", ""),
     ("Recenter camera", "KeyR", "RightThumb"),
+    // The 3DS plane's L and R.
+    ("Lean left / barrel roll", "KeyZ", "LeftTrigger"), ("Lean right / barrel roll", "KeyX", "RightTrigger"),
 ];
 
 pub fn binding(save: &crate::save::Save, i: usize) -> [String; 2] {
@@ -22,7 +27,7 @@ pub fn binding(save: &crate::save::Save, i: usize) -> [String; 2] {
 }
 
 pub fn label(raw: &str) -> String {
-    match raw { "South" => "A / Cross".into(), "East" => "B / Circle".into(), "West" => "X / Square".into(), "North" => "Y / Triangle".into(), "RightTrigger2" => "RT / R2".into(), "LeftTrigger2" => "LT / L2".into(), "LeftTrigger" => "LB / L1".into(), "RightTrigger" => "RB / R1".into(), "RightThumb" => "RS / R3".into(), "LeftThumb" => "LS / L3".into(), "Select" => "Back / Select".into(), "DPadLeft" => "D-pad left".into(), "DPadRight" => "D-pad right".into(), "DPadUp" => "D-pad up".into(), "DPadDown" => "D-pad down".into(), "ShiftLeft" => "Left Shift".into(), "ControlLeft" => "Left Ctrl".into(), _ => raw.strip_prefix("Key").unwrap_or(raw).into() }
+    match raw { "" => "—".into(), "South" => "A / Cross".into(), "East" => "B / Circle".into(), "West" => "X / Square".into(), "North" => "Y / Triangle".into(), "RightTrigger2" => "RT / R2".into(), "LeftTrigger2" => "LT / L2".into(), "LeftTrigger" => "LB / L1".into(), "RightTrigger" => "RB / R1".into(), "RightThumb" => "RS / R3".into(), "LeftThumb" => "LS / L3".into(), "Select" => "Back / Select".into(), "DPadLeft" => "D-pad left".into(), "DPadRight" => "D-pad right".into(), "DPadUp" => "D-pad up".into(), "DPadDown" => "D-pad down".into(), "ShiftLeft" => "Left Shift".into(), "ControlLeft" => "Left Ctrl".into(), _ => raw.strip_prefix("Key").unwrap_or(raw).into() }
 }
 
 const BUTTONS: [GamepadButton; 19] = [GamepadButton::South, GamepadButton::East, GamepadButton::North, GamepadButton::West, GamepadButton::C, GamepadButton::Z, GamepadButton::LeftTrigger, GamepadButton::LeftTrigger2, GamepadButton::RightTrigger, GamepadButton::RightTrigger2, GamepadButton::Select, GamepadButton::Start, GamepadButton::Mode, GamepadButton::LeftThumb, GamepadButton::RightThumb, GamepadButton::DPadUp, GamepadButton::DPadDown, GamepadButton::DPadLeft, GamepadButton::DPadRight];
@@ -51,6 +56,9 @@ pub struct Controls {
     pub speedometer: bool,
     /// Snap the camera back behind the player or plane.
     pub recenter: bool,
+    /// 3DS plane shoulder buttons (held).
+    pub lean_left: bool,
+    pub lean_right: bool,
     // Menu navigation (initial press plus held repeat).
     pub up: bool,
     pub down: bool,
@@ -96,7 +104,7 @@ pub fn read(
         right: kj(&[KeyCode::ArrowRight, KeyCode::KeyD]),
         confirm: kj(&[KeyCode::Enter, KeyCode::Space]),
         back: kj(&[KeyCode::Escape, KeyCode::Backspace]),
-        pad: c.pad, record: edge(12), speedometer: edge(13), recenter: edge(14),
+        pad: c.pad, record: edge(12), speedometer: edge(13), recenter: edge(14), lean_left: held(15), lean_right: held(16),
         ..default()
     };
     if keys.get_just_pressed().next().is_some() || mouse.delta != Vec2::ZERO {
@@ -121,6 +129,7 @@ pub fn read(
         s.jump |= edge(6); s.shoot |= held(6); s.cut |= held(7);
         s.flare |= edge(8); s.board |= edge(9); s.pause |= edge(10) || p.just_pressed(GamepadButton::Start); s.time |= edge(11);
         s.record |= edge(12); s.speedometer |= edge(13); s.recenter |= edge(14);
+        s.lean_left |= held(15); s.lean_right |= held(16);
         s.confirm |= p.just_pressed(GamepadButton::South);
         s.back |= p.just_pressed(GamepadButton::East);
         s.up |= p.just_pressed(GamepadButton::DPadUp);

@@ -1,5 +1,7 @@
-//! Static island collision from the disc's KCL files, in a uniform XZ grid.
+//! Static island collision from the disc's KCL files, in a uniform XZ grid,
+//! plus moving platforms (the add-on's landing-pad blimp).
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use std::collections::HashMap;
 
@@ -17,6 +19,32 @@ pub struct Tri {
 pub struct Collision {
     pub tris: Vec<Tri>,
     grid: HashMap<(i32, i32), Vec<u32>>,
+    pub platforms: Vec<Platform>,
+}
+
+/// Triangles in their own space that move as a whole.
+pub struct Platform {
+    tris: Vec<Tri>,
+    to_world: Affine3A,
+    /// The last update's motion and its duration, which carry whatever
+    /// stands on the platform.
+    pub moved: Affine3A,
+    dt: f32,
+}
+
+impl Platform {
+    pub fn new(tris: Vec<[Vec3; 3]>, to_world: Affine3A) -> Self {
+        Self { tris: tris.into_iter().filter_map(|[a, b, c]| tri(a, b, c, 0)).collect(), to_world, moved: Affine3A::IDENTITY, dt: 1.0 }
+    }
+    pub fn set(&mut self, to_world: Affine3A, dt: f32) {
+        self.moved = to_world * self.to_world.inverse();
+        self.to_world = to_world;
+        self.dt = dt.max(1e-4);
+    }
+    /// How far a point riding the platform moves in `dt` seconds.
+    pub fn carry(&self, p: Vec3, dt: f32) -> Vec3 {
+        (self.moved.transform_point3(p) - p) * (dt / self.dt)
+    }
 }
 
 pub struct Hit {
@@ -24,31 +52,67 @@ pub struct Hit {
     pub pos: Vec3,
     pub n: Vec3,
     pub flags: u32,
+    pub platform: Option<usize>,
+}
+
+/// Triangles of a collision file: a count, then three corners and a flags word each.
+pub fn read_tris(bytes: &[u8]) -> Vec<([Vec3; 3], u32)> {
+    let f = |o: usize| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+    let n = bytes.get(0..4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize).min(bytes.len().saturating_sub(4) / 40);
+    (0..n).map(|i| {
+        let o = 4 + i * 40;
+        let v = |k: usize| Vec3::new(f(o + k * 12), f(o + k * 12 + 4), f(o + k * 12 + 8));
+        ([v(0), v(1), v(2)], u32::from_le_bytes(bytes[o + 36..o + 40].try_into().unwrap()))
+    }).collect()
+}
+
+fn tri(a: Vec3, b: Vec3, c: Vec3, flags: u32) -> Option<Tri> {
+    let n = (b - a).cross(c - a).normalize_or_zero();
+    (n != Vec3::ZERO).then_some(Tri { a, b, c, n, flags })
+}
+
+/// Möller–Trumbore, double sided: distance along `d` (any length) to the triangle.
+fn ray_tri(o: Vec3, d: Vec3, len: f32, t: &Tri) -> Option<f32> {
+    let (e1, e2) = (t.b - t.a, t.c - t.a);
+    let p = d.cross(e2);
+    let det = e1.dot(p);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let s = o - t.a;
+    let u = s.dot(p) / det;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(e1);
+    let v = d.dot(q) / det;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let dist = e2.dot(q) / det;
+    (dist >= 0.0 && dist <= len).then_some(dist)
 }
 
 fn cell(v: f32) -> i32 { (v / CELL).floor() as i32 }
 
 impl Collision {
     fn add_file(&mut self, bytes: &[u8]) {
-        let f = |o: usize| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
-        let n = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
-        for i in 0..n {
-            let o = 4 + i * 40;
-            let v = |k: usize| Vec3::new(f(o + k * 12), f(o + k * 12 + 4), f(o + k * 12 + 8));
-            let (a, b, c) = (v(0), v(1), v(2));
-            let nrm = (b - a).cross(c - a).normalize_or_zero();
-            if nrm == Vec3::ZERO {
-                continue;
-            }
-            let idx = self.tris.len() as u32;
-            let (lo, hi) = (a.min(b).min(c), a.max(b).max(c));
-            for x in cell(lo.x)..=cell(hi.x) {
-                for z in cell(lo.z)..=cell(hi.z) {
-                    self.grid.entry((x, z)).or_default().push(idx);
-                }
-            }
-            self.tris.push(Tri { a, b, c, n: nrm, flags: u32::from_le_bytes(bytes[o + 36..o + 40].try_into().unwrap()) });
+        for ([a, b, c], flags) in read_tris(bytes) {
+            self.add(a, b, c, flags);
         }
+    }
+
+    /// Adds one static triangle.
+    pub fn add(&mut self, a: Vec3, b: Vec3, c: Vec3, flags: u32) {
+        let Some(t) = tri(a, b, c, flags) else { return };
+        let idx = self.tris.len() as u32;
+        let (lo, hi) = (a.min(b).min(c), a.max(b).max(c));
+        for x in cell(lo.x)..=cell(hi.x) {
+            for z in cell(lo.z)..=cell(hi.z) {
+                self.grid.entry((x, z)).or_default().push(idx);
+            }
+        }
+        self.tris.push(t);
     }
 
     fn candidates(&self, lo: Vec3, hi: Vec3) -> Vec<u32> {
@@ -71,26 +135,20 @@ impl Collision {
         let mut best: Option<Hit> = None;
         for i in self.candidates(o.min(e), o.max(e)) {
             let t = &self.tris[i as usize];
-            // Möller–Trumbore, double sided.
-            let (e1, e2) = (t.b - t.a, t.c - t.a);
-            let p = d.cross(e2);
-            let det = e1.dot(p);
-            if det.abs() < 1e-8 {
-                continue;
+            if let Some(dist) = ray_tri(o, d, len, t) && best.as_ref().is_none_or(|b| dist < b.t) {
+                best = Some(Hit { t: dist, pos: o + d * dist, n: t.n, flags: t.flags, platform: None });
             }
-            let s = o - t.a;
-            let u = s.dot(p) / det;
-            if !(0.0..=1.0).contains(&u) {
-                continue;
-            }
-            let q = s.cross(e1);
-            let v = d.dot(q) / det;
-            if v < 0.0 || u + v > 1.0 {
-                continue;
-            }
-            let dist = e2.dot(q) / det;
-            if dist >= 0.0 && dist <= len && best.as_ref().is_none_or(|b| dist < b.t) {
-                best = Some(Hit { t: dist, pos: o + d * dist, n: t.n, flags: t.flags });
+        }
+        // Platforms: the same ray in each platform's own space (the scaled
+        // direction keeps distances in world units).
+        for (k, p) in self.platforms.iter().enumerate() {
+            let inv = p.to_world.inverse();
+            let (lo, ld) = (inv.transform_point3(o), inv.transform_vector3(d));
+            for t in &p.tris {
+                if let Some(dist) = ray_tri(lo, ld, len, t) && best.as_ref().is_none_or(|b| dist < b.t) {
+                    let n = p.to_world.transform_vector3(t.n).normalize_or_zero();
+                    best = Some(Hit { t: dist, pos: o + d * dist, n, flags: t.flags, platform: Some(k) });
+                }
             }
         }
         best
@@ -185,5 +243,19 @@ mod tests {
         assert!((h.pos.y).abs() < 1e-3 && h.flags == 7);
         let p = c.push_sphere(Vec3::new(45., 0., 0.), 10., 0.7);
         assert!((p.x - 40.).abs() < 1e-3);
+    }
+
+    #[test]
+    fn moving_platform_is_hit_where_it_is_and_reports_its_motion() {
+        let mut c = Collision::default();
+        let floor = vec![[Vec3::new(-1., 0., -1.), Vec3::new(-1., 0., 1.), Vec3::new(1., 0., 0.)]];
+        // Ten times larger and 100 up.
+        let at = |x: f32| Affine3A::from_scale_rotation_translation(Vec3::splat(10.), Quat::IDENTITY, Vec3::new(x, 100., 0.));
+        c.platforms.push(Platform::new(floor, at(0.)));
+        let h = c.ground(Vec3::new(0., 105., 0.), 0., 20.).unwrap();
+        assert!((h.pos.y - 100.).abs() < 1e-3 && (h.t - 5.).abs() < 1e-3 && h.platform == Some(0));
+        c.platforms[0].set(at(30.), 0.5);
+        assert!(c.ground(Vec3::new(0., 105., 0.), 0., 20.).is_none());
+        assert!((c.platforms[0].carry(Vec3::ZERO, 0.25) - Vec3::X * 15.).length() < 1e-3);
     }
 }

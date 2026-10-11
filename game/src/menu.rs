@@ -1,6 +1,6 @@
 //! Shared title/pause menus with keyboard, gamepad and pointer navigation.
 use crate::input::Controls;
-use crate::ipoint::{IPoints, READINGS, name_id};
+use crate::ipoint::IPoints;
 use crate::lang::{Languages, Texts, Ui};
 use crate::save::Save;
 use crate::world::{MainCamera, TimeOfDay};
@@ -49,6 +49,7 @@ fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWind
 pub fn preview_controls(mut m: ResMut<Menu>) {
     m.open = true; m.sel = 0;
     m.page = match std::env::var("SI_MENU").as_deref() {Ok("settings")=>Page::Settings,Ok("record")=>Page::Record,_=>Page::Controls};
+    if let Some(s) = std::env::var("SI_MENU_SCROLL").ok().and_then(|s| s.parse().ok()) { m.scroll = s; }
 }
 fn system_ui(window: &Window, keys: &ButtonInput<KeyCode>) -> bool {
     !window.focused || keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight, KeyCode::PrintScreen])
@@ -130,7 +131,7 @@ fn mouse_input(mut m: ResMut<Menu>, mut c: ResMut<Controls>, mut clicks: Message
     if !m.open || m.capturing { return; }
     for click in clicks {
         match *click {
-            Click::Row(i) if m.page != Page::Record => { m.sel = i; c.confirm = true; }
+            Click::Row(i) if m.page != Page::Record => { m.sel = i + if m.page == Page::Controls { m.scroll } else { 0 }; c.confirm = true; }
             Click::Step(-1) => c.left = true, Click::Step(1) => c.right = true, Click::Step(_) => c.back = true,
             Click::Record => { m.page = Page::Record; m.scroll = 0; m.direct_record = false; }
             _ => {}
@@ -144,15 +145,15 @@ fn orbit_camera(time: Res<Time>, mut cam: Single<&mut Transform, With<MainCamera
     cam.look_at(Vec3::new(0.0, 600.0, 0.0), Vec3::Y);
 }
 fn navigate(sel: &mut usize, n: usize, c: &Controls) { if c.down { *sel = (*sel + 1) % n; } if c.up { *sel = (*sel + n - 1) % n; } }
-fn record_scroll(scroll: usize, c: &Controls) -> usize {
-    (scroll as i32 + c.down as i32 - c.up as i32 + (c.right as i32 - c.left as i32) * LINES as i32).clamp(0, (80 - LINES) as i32) as usize
+fn record_scroll(scroll: usize, c: &Controls, total: usize) -> usize {
+    (scroll as i32 + c.down as i32 - c.up as i32 + (c.right as i32 - c.left as i32) * LINES as i32).clamp(0, total.saturating_sub(LINES) as i32) as usize
 }
 fn close(m: &mut Menu, time: &mut Time<Virtual>, c: &mut Controls) {
     m.open = false; m.direct_record = false; time.unpause();
     c.shoot = false; c.jump = false; c.board = false; c.flare = false;
 }
 #[allow(clippy::too_many_arguments)]
-pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<State<AppState>>, mut next: ResMut<NextState<AppState>>, mut vtime: ResMut<Time<Virtual>>, mut tod: ResMut<TimeOfDay>, mut save: ResMut<Save>, mut texts: ResMut<Texts>, langs: Res<Languages>, mut exit: MessageWriter<AppExit>) {
+pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<State<AppState>>, mut next: ResMut<NextState<AppState>>, mut vtime: ResMut<Time<Virtual>>, mut tod: ResMut<TimeOfDay>, mut save: ResMut<Save>, mut texts: ResMut<Texts>, langs: Res<Languages>, points: Res<IPoints>, extras: Option<Res<crate::collect::Items>>, mut exit: MessageWriter<AppExit>) {
     let title = *state.get() == AppState::Title;
     if !title && c.speedometer { save.speedometer = !save.speedometer; save.store(); }
     if !m.open {
@@ -161,7 +162,8 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
     }
     if m.page == Page::Controls { return; }
     if m.page == Page::Record {
-        m.scroll = record_scroll(m.scroll, &c);
+        let extra = extras.map_or(0, |x| x.record(&save, &texts).len());
+        m.scroll = record_scroll(m.scroll, &c, points.0.len() + extra);
         if c.back || c.pause || c.record {
             if m.direct_record { close(&mut m, &mut vtime, &mut c); } else { m.page = Page::Main; m.sel = 7; }
         }
@@ -170,7 +172,7 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
     if !title && c.record { m.page = Page::Record; m.scroll = 0; m.direct_record = false; return; }
     if m.page == Page::Settings {
         if c.back || c.pause { m.page = Page::Main; m.sel = 5; return; }
-        navigate(&mut m.sel, 6, &c);
+        navigate(&mut m.sel, if crate::pwr::available() { 7 } else { 6 }, &c);
         let step = c.right as i32 - c.left as i32 + c.confirm as i32;
         if step != 0 {
             match m.sel {
@@ -179,7 +181,8 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
                 2 => save.ground_assist = (save.ground_assist + step as f32 * 0.1).clamp(0.0, 1.0),
                 3 => save.invert_pitch = !save.invert_pitch,
                 4 => save.speedometer = !save.speedometer,
-                _ => save.fullscreen = !save.fullscreen,
+                5 => save.fullscreen = !save.fullscreen,
+                _ => save.plane_wii_style = !save.plane_wii_style,
             }
             save.store();
         }
@@ -195,9 +198,10 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
         Row::Start if c.confirm => { save.lang = Some(texts.code.clone()); close(&mut m, &mut vtime, &mut c); next.set(AppState::Play); }
         Row::Resume if c.confirm => close(&mut m, &mut vtime, &mut c),
         Row::Time => { tod.0 = cycle(tod.0, 3); save.time = tod.0; }
-        Row::Plane => save.plane = cycle(save.plane, 2),
+        Row::Plane => save.plane = cycle(save.plane, 2 + if crate::pwr::available() { crate::vehicles::KINDS.len() as u8 } else { 0 }),
+        Row::Livery if crate::vehicles::selected(&save).is_some() => save.favorite = cycle(save.favorite, 12),
         Row::Livery => save.livery = cycle(save.livery, if save.plane == 0 {3} else {2}),
-        Row::Controls if c.confirm => { m.page = Page::Controls; m.sel = 0; }
+        Row::Controls if c.confirm => { m.page = Page::Controls; m.sel = 0; m.scroll = 0; }
         Row::Settings if c.confirm => { m.page = Page::Settings; m.sel = 0; }
         Row::Language => {
             let i = langs.0.iter().position(|l| l.code == texts.code).unwrap_or(0) as u8;
@@ -227,16 +231,23 @@ fn controls_input(mut m: ResMut<Menu>, mut c: ResMut<Controls>, mut save: ResMut
         }
     } else {
         navigate(&mut m.sel, n+1, &c);
+        // Scroll the list just enough to keep the selection on screen.
+        m.scroll = m.scroll.clamp(m.sel.saturating_sub(LINES - 1), m.sel);
         if c.confirm { if m.sel == n { save.bindings.clear(); save.store(); } else { m.capturing = true; } }
     }
     c.confirm = false; c.shoot = false; c.board = false; c.flare = false; c.jump = false;
 }
+/// i-points with at least one of their three readings collected.
+fn points_found(save: &Save, points: usize) -> usize {
+    (0..points).filter(|i| (0..3).any(|t| save.collected.contains(&((i * 3 + t) as u16)))).count()
+}
+
 /// A changeable value between chevrons.
 fn choice(v: impl std::fmt::Display) -> String { format!("‹  {v}  ›") }
 
 #[allow(clippy::too_many_arguments)]
 fn render(
-    (m, state, texts, langs, save, tod, points, c): (Res<Menu>, Res<State<AppState>>, Res<Texts>, Res<Languages>, Res<Save>, Res<TimeOfDay>, Res<IPoints>, Res<Controls>),
+    (m, state, texts, langs, save, tod, points, c, extras): (Res<Menu>, Res<State<AppState>>, Res<Texts>, Res<Languages>, Res<Save>, Res<TimeOfDay>, Res<IPoints>, Res<Controls>, Option<Res<crate::collect::Items>>),
     window: Single<&Window>,
     mut root: Single<&mut Visibility, With<MenuRoot>>,
     mut panel: Single<&mut Node, (With<MenuPanel>, Without<Item>, Without<Footer>)>,
@@ -266,43 +277,52 @@ fn render(
                 (texts.action(i).to_string(), if m.capturing && m.sel == i {texts.ui(Ui::Waiting).into()} else {format!("{}  /  {}", texts.binding(&pair[0]), texts.binding(&pair[1]))})
             }).collect();
             rows.push((texts.ui(Ui::ResetControls).into(), String::new()));
-            rows
+            // Longer than the panel: show the window that holds the selection.
+            selected = m.sel.checked_sub(m.scroll);
+            rows.into_iter().skip(m.scroll).take(LINES).collect()
         }
         Page::Settings => {
             header.0.set_if_neq(Text::new(texts.ui(Ui::Settings))); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
-            vec![
+            let mut rows: Vec<(String, String)> = vec![
                 (texts.ui(Ui::FlightSensitivity).into(), choice(format!("{:.0}%", save.flight_sensitivity * 100.0))),
                 (texts.ui(Ui::LookSensitivity).into(), choice(format!("{:.0}%", save.look_sensitivity * 100.0))),
                 (texts.ui(Ui::GroundAssist).into(), choice(format!("{:.0}%", save.ground_assist * 100.0))),
                 (texts.ui(Ui::InvertPitch).into(), choice(onoff(save.invert_pitch))),
                 (texts.ui(Ui::Speedometer).into(), choice(onoff(save.speedometer))),
                 (texts.ui(Ui::Fullscreen).into(), choice(onoff(save.fullscreen))),
-            ]
+            ];
+            if crate::pwr::available() { rows.push((texts.ui(Ui::PlaneHandling).into(), choice(texts.ui(if save.plane_wii_style { Ui::WiiStyle } else { Ui::Original })))); }
+            rows
         }
         Page::Record => {
-            header.0.set_if_neq(Text::new(format!("{} — {} / {}", texts.ui(Ui::IPoints), save.collected.len(), READINGS)));
-            help.set_if_neq(Text::new(format!("{}   ({}–{} / 80)", texts.ui(Ui::RecordHint), m.scroll + 1, m.scroll + LINES)));
-            selected = None;
-            (m.scroll..m.scroll + LINES).map(|i| {
+            // Each point has a day, evening and night reading.
+            header.0.set_if_neq(Text::new(format!("{} — {} / {}   (● {} / {})", texts.ui(Ui::IPoints), points_found(&save, points.0.len()), points.0.len(), save.collected.len(), points.0.len() * 3)));
+            let mut all: Vec<(String, String)> = (0..points.0.len()).map(|i| {
                 let mark = |t| if save.collected.contains(&((i * 3) as u16 + t)) {"●"} else {"○"};
-                let name = if (0..3).any(|t| save.collected.contains(&((i * 3) as u16 + t))) {texts.msg(name_id(&points.0[i]), c.pad)} else {"?".into()};
+                let name = if (0..3).any(|t| save.collected.contains(&((i * 3) as u16 + t))) {points.0[i].name(&texts, c.pad)} else {"?".into()};
                 (format!("{:>2}.  {}", i + 1, name), format!("{} {} {}", mark(0), mark(1), mark(2)))
-            }).collect()
+            }).collect();
+            if let Some(x) = &extras { all.extend(x.record(&save, &texts)); }
+            help.set_if_neq(Text::new(format!("{}   ({}–{} / {})", texts.ui(Ui::RecordHint), m.scroll + 1, (m.scroll + LINES).min(all.len()), all.len())));
+            selected = None;
+            all.into_iter().skip(m.scroll).take(LINES).collect()
         }
         Page::Main => {
             header.0.set_if_neq(Text::new("Sport Island")); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
             let lang = langs.0.iter().find(|l| l.code == texts.code).map_or("", |l| l.name.as_str());
-            let livery = if save.plane == 0 { [Ui::Red, Ui::White, Ui::Yellow][save.livery.min(2) as usize] } else { [Ui::Orange, Ui::Blue][save.livery.min(1) as usize] };
+            let vehicle = crate::vehicles::selected(&save);
+            let livery = if vehicle.is_some() { crate::lang::FAVORITES[save.favorite.min(11) as usize] } else if save.plane == 0 { [Ui::Red, Ui::White, Ui::Yellow][save.livery.min(2) as usize] } else { [Ui::Orange, Ui::Blue][save.livery.min(1) as usize] };
+            let plane_name = match vehicle { Some(k) => texts.pwr(k.name_key()).unwrap_or_else(|| format!("{k:?}")), None => texts.ui(if save.plane == 0 {Ui::Plane1} else {Ui::Plane2}).into() };
             (if title {TITLE} else {PAUSE}).iter().map(|row| match row {
                 Row::Start => (texts.ui(Ui::Start).into(), String::new()),
                 Row::Resume => (texts.ui(Ui::Resume).into(), String::new()),
                 Row::Time => (texts.ui(Ui::TimeOfDay).into(), choice(texts.ui([Ui::Day, Ui::Dusk, Ui::Night][tod.0 as usize]))),
-                Row::Plane => (if title {texts.ui(Ui::Plane).into()} else {format!("{} ({})", texts.ui(Ui::Plane), texts.ui(Ui::NextBoarding))}, choice(texts.ui(if save.plane == 0 {Ui::Plane1} else {Ui::Plane2}))),
+                Row::Plane => (if title {texts.ui(Ui::Plane).into()} else {format!("{} ({})", texts.ui(Ui::Plane), texts.ui(Ui::NextBoarding))}, choice(&plane_name)),
                 Row::Livery => (texts.ui(Ui::Livery).into(), choice(texts.ui(livery))),
                 Row::Controls => (texts.ui(Ui::Controls).into(), "›".into()),
                 Row::Settings => (texts.ui(Ui::Settings).into(), "›".into()),
                 Row::Language => (texts.ui(Ui::Language).into(), choice(lang)),
-                Row::Record => (texts.ui(Ui::IPoints).into(), format!("{} / {}  ›", save.collected.len(), READINGS)),
+                Row::Record => (texts.ui(Ui::IPoints).into(), format!("{} / {}  ›", points_found(&save, points.0.len()), points.0.len())),
                 Row::Quit => (texts.ui(Ui::Quit).into(), String::new()),
             }).collect()
         }
@@ -394,13 +414,25 @@ mod tests {
         w.trigger(Activate {entity:counter}); w.run_system_once(mouse_input).unwrap();
         assert!(w.resource::<Menu>().page == Page::Main, "counter opens only while paused");
     }
+    #[test] fn controls_list_scrolls_to_keep_the_selection_visible() {
+        let mut w = World::new();
+        w.insert_resource(Menu {open:true, page:Page::Controls, ..default()}); w.init_resource::<Save>();
+        w.init_resource::<ButtonInput<KeyCode>>(); w.init_resource::<ButtonInput<MouseButton>>();
+        let rows = crate::input::ACTIONS.len() + 1;
+        for _ in 0..rows - 1 { w.insert_resource(Controls {down:true,..default()}); w.run_system_once(controls_input).unwrap(); }
+        let m = w.resource::<Menu>();
+        assert_eq!(m.sel, rows - 1);
+        assert!(m.scroll + LINES > m.sel && m.scroll <= m.sel, "selection {} outside rows {}..{}", m.sel, m.scroll, m.scroll + LINES);
+        w.insert_resource(Controls {down:true,..default()}); w.run_system_once(controls_input).unwrap();
+        assert_eq!((w.resource::<Menu>().sel, w.resource::<Menu>().scroll), (0, 0), "wraps back to the top");
+    }
     #[test] fn navigation_and_record_pages_are_bounded() {
         let mut sel = 0; let c = Controls { down: true, ..default() };
         for _ in 0..3 { navigate(&mut sel, TITLE.len(), &c); }
         assert_eq!(TITLE[sel] as u8, Row::Livery as u8);
-        assert_eq!(record_scroll(0, &Controls {left:true,..default()}),0);
-        assert_eq!(record_scroll(0, &Controls {right:true,..default()}),16);
-        assert_eq!(record_scroll(63, &Controls {right:true,..default()}),64);
+        assert_eq!(record_scroll(0, &Controls {left:true,..default()}, 80),0);
+        assert_eq!(record_scroll(0, &Controls {right:true,..default()}, 80),16);
+        assert_eq!(record_scroll(63, &Controls {right:true,..default()}, 80),64);
     }
     #[test] fn title_navigation_preserves_language_and_record_shortcut_pauses_then_resumes() {
         let mut w = World::new();
@@ -408,7 +440,7 @@ mod tests {
         w.insert_resource(Menu {open:true,..default()}); w.insert_resource(Controls {down:true,..default()});
         w.init_resource::<Time<Virtual>>(); w.insert_resource(TimeOfDay(0)); w.init_resource::<Save>();
         let mut texts=Texts::default(); texts.code="FR".into();
-        w.insert_resource(texts); w.insert_resource(Languages(vec![])); w.init_resource::<Messages<AppExit>>();
+        w.insert_resource(texts); w.insert_resource(Languages(vec![])); w.insert_resource(IPoints(vec![])); w.init_resource::<Messages<AppExit>>();
         for _ in 0..3 { w.run_system_once(pause_input).unwrap(); }
         assert_eq!(w.resource::<Texts>().code,"FR", "browsing options must not select a language");
         assert_eq!(w.resource::<Menu>().sel,3);
