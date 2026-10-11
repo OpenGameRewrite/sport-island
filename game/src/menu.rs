@@ -49,6 +49,7 @@ fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWind
 pub fn preview_controls(mut m: ResMut<Menu>) {
     m.open = true; m.sel = 0;
     m.page = match std::env::var("SI_MENU").as_deref() {Ok("settings")=>Page::Settings,Ok("record")=>Page::Record,_=>Page::Controls};
+    if let Some(s) = std::env::var("SI_MENU_SCROLL").ok().and_then(|s| s.parse().ok()) { m.scroll = s; }
 }
 fn system_ui(window: &Window, keys: &ButtonInput<KeyCode>) -> bool {
     !window.focused || keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight, KeyCode::PrintScreen])
@@ -152,7 +153,7 @@ fn close(m: &mut Menu, time: &mut Time<Virtual>, c: &mut Controls) {
     c.shoot = false; c.jump = false; c.board = false; c.flare = false;
 }
 #[allow(clippy::too_many_arguments)]
-pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<State<AppState>>, mut next: ResMut<NextState<AppState>>, mut vtime: ResMut<Time<Virtual>>, mut tod: ResMut<TimeOfDay>, mut save: ResMut<Save>, mut texts: ResMut<Texts>, langs: Res<Languages>, points: Res<IPoints>, mut exit: MessageWriter<AppExit>) {
+pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<State<AppState>>, mut next: ResMut<NextState<AppState>>, mut vtime: ResMut<Time<Virtual>>, mut tod: ResMut<TimeOfDay>, mut save: ResMut<Save>, mut texts: ResMut<Texts>, langs: Res<Languages>, points: Res<IPoints>, extras: Option<Res<crate::collect::Items>>, mut exit: MessageWriter<AppExit>) {
     let title = *state.get() == AppState::Title;
     if !title && c.speedometer { save.speedometer = !save.speedometer; save.store(); }
     if !m.open {
@@ -161,7 +162,8 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
     }
     if m.page == Page::Controls { return; }
     if m.page == Page::Record {
-        m.scroll = record_scroll(m.scroll, &c, points.0.len());
+        let extra = extras.map_or(0, |x| x.record(&save, &texts).len());
+        m.scroll = record_scroll(m.scroll, &c, points.0.len() + extra);
         if c.back || c.pause || c.record {
             if m.direct_record { close(&mut m, &mut vtime, &mut c); } else { m.page = Page::Main; m.sel = 7; }
         }
@@ -233,12 +235,17 @@ fn controls_input(mut m: ResMut<Menu>, mut c: ResMut<Controls>, mut save: ResMut
     }
     c.confirm = false; c.shoot = false; c.board = false; c.flare = false; c.jump = false;
 }
+/// i-points with at least one of their three readings collected.
+fn points_found(save: &Save, points: usize) -> usize {
+    (0..points).filter(|i| (0..3).any(|t| save.collected.contains(&((i * 3 + t) as u16)))).count()
+}
+
 /// A changeable value between chevrons.
 fn choice(v: impl std::fmt::Display) -> String { format!("‹  {v}  ›") }
 
 #[allow(clippy::too_many_arguments)]
 fn render(
-    (m, state, texts, langs, save, tod, points, c): (Res<Menu>, Res<State<AppState>>, Res<Texts>, Res<Languages>, Res<Save>, Res<TimeOfDay>, Res<IPoints>, Res<Controls>),
+    (m, state, texts, langs, save, tod, points, c, extras): (Res<Menu>, Res<State<AppState>>, Res<Texts>, Res<Languages>, Res<Save>, Res<TimeOfDay>, Res<IPoints>, Res<Controls>, Option<Res<crate::collect::Items>>),
     window: Single<&Window>,
     mut root: Single<&mut Visibility, With<MenuRoot>>,
     mut panel: Single<&mut Node, (With<MenuPanel>, Without<Item>, Without<Footer>)>,
@@ -284,14 +291,17 @@ fn render(
             rows
         }
         Page::Record => {
-            header.0.set_if_neq(Text::new(format!("{} — {} / {}", texts.ui(Ui::IPoints), save.collected.len(), points.0.len() * 3)));
-            help.set_if_neq(Text::new(format!("{}   ({}–{} / {})", texts.ui(Ui::RecordHint), m.scroll + 1, m.scroll + LINES, points.0.len())));
-            selected = None;
-            (m.scroll..m.scroll + LINES).map(|i| {
+            // Each point has a day, evening and night reading.
+            header.0.set_if_neq(Text::new(format!("{} — {} / {}   (● {} / {})", texts.ui(Ui::IPoints), points_found(&save, points.0.len()), points.0.len(), save.collected.len(), points.0.len() * 3)));
+            let mut all: Vec<(String, String)> = (0..points.0.len()).map(|i| {
                 let mark = |t| if save.collected.contains(&((i * 3) as u16 + t)) {"●"} else {"○"};
                 let name = if (0..3).any(|t| save.collected.contains(&((i * 3) as u16 + t))) {points.0[i].name(&texts, c.pad)} else {"?".into()};
                 (format!("{:>2}.  {}", i + 1, name), format!("{} {} {}", mark(0), mark(1), mark(2)))
-            }).collect()
+            }).collect();
+            if let Some(x) = &extras { all.extend(x.record(&save, &texts)); }
+            help.set_if_neq(Text::new(format!("{}   ({}–{} / {})", texts.ui(Ui::RecordHint), m.scroll + 1, (m.scroll + LINES).min(all.len()), all.len())));
+            selected = None;
+            all.into_iter().skip(m.scroll).take(LINES).collect()
         }
         Page::Main => {
             header.0.set_if_neq(Text::new("Sport Island")); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
@@ -308,7 +318,7 @@ fn render(
                 Row::Controls => (texts.ui(Ui::Controls).into(), "›".into()),
                 Row::Settings => (texts.ui(Ui::Settings).into(), "›".into()),
                 Row::Language => (texts.ui(Ui::Language).into(), choice(lang)),
-                Row::Record => (texts.ui(Ui::IPoints).into(), format!("{} / {}  ›", save.collected.len(), points.0.len() * 3)),
+                Row::Record => (texts.ui(Ui::IPoints).into(), format!("{} / {}  ›", points_found(&save, points.0.len()), points.0.len())),
                 Row::Quit => (texts.ui(Ui::Quit).into(), String::new()),
             }).collect()
         }

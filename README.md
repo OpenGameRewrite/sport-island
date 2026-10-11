@@ -84,7 +84,10 @@ Each vehicle class also has its 3DS free-flight collectibles, shown only while
 you fly it: 60 Gold Rings for the gliders, 60 Stunt Rings for the plane and jet
 (fly through while leaning, upside down or barrel-rolling as the ring asks;
 spinning rings want a roll that way) and 60 Mii Trophies for the rocket belts,
-plus 40 balloons each. The counts show under the i-point counter and are saved. Shared i-points keep the Wii wording; build with
+plus 40 balloons each. The counts show under the i-point counter while you
+fly, all of them are listed at the end of the i-point list (Tab / LB), and they
+are saved. The 3DS shows your Mii's face inside each Stunt Ring, tilted to hint
+at the stunt; there is no Mii here, so the rings are left open. Shared i-points keep the Wii wording; build with
 `--features pwr-text` to read the 3DS wording instead.
 
 ## Work in progress

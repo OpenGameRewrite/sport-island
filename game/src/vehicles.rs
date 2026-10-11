@@ -490,6 +490,9 @@ pub struct Vehicle {
     tapped: bool,
     /// Controls and state for animation and sound.
     pub drive: crate::motion::Drive,
+    /// Poses after the previous and the latest physics step; the drawn
+    /// transform blends between them so the chase camera does not judder.
+    pose: [Transform; 2],
 }
 
 impl Vehicle {
@@ -506,7 +509,7 @@ pub fn plugin(app: &mut App) {
         .add_systems(PreUpdate, shoulders.after(crate::input::read))
         .add_systems(Update, board.before(crate::plane::board).run_if(crate::menu::playing))
         .add_systems(FixedUpdate, fly.run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
-        .add_systems(Update, camera.run_if(crate::menu::playing.and_then(in_state(Mode::Fly))))
+        .add_systems(Update, (smooth, camera.run_if(crate::menu::playing.and_then(in_state(Mode::Fly)))).chain())
         .add_systems(OnEnter(AppState::Play), (spawn_thermals, spawn_gauge))
         .add_systems(Update, gauge)
         .add_systems(Update, show_thermals)
@@ -552,7 +555,7 @@ fn board(
             body.vel = body.rot * Vec3::Z * speed;
             let t = body.transform();
             let rocket = Rocket { power: if kind == Kind::SuperRocket { 1.3 } else { 1.0 } };
-            commands.spawn((Vehicle { kind, body, glider: Glider::default(), pedal: Pedal::default(), rocket, flight: Flight::default(), params: PlaneParams::load(kind), tapped: false, drive: default() }, Flying, t, Visibility::default())).with_children(|v| {
+            commands.spawn((Vehicle { kind, body, glider: Glider::default(), pedal: Pedal::default(), rocket, flight: Flight::default(), params: PlaneParams::load(kind), tapped: false, drive: default(), pose: [t; 2] }, Flying, t, Visibility::default())).with_children(|v| {
                 v.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("pwr/models/{}_lod1.glb", kind.container())))), Rider(kind), crate::motion::Parts::new(kind)))
                     .observe(attach_pilot).observe(crate::motion::collect);
             });
@@ -584,11 +587,12 @@ fn fly(
     col: Res<Collision>,
     thermals: Res<Thermals>,
     mut next: ResMut<NextState<Mode>>,
-    mut q: Query<(&mut Vehicle, &mut Transform)>,
+    mut q: Query<&mut Vehicle>,
     mut player: Single<(&mut Player, &mut Transform, &mut Visibility), Without<Vehicle>>,
     mut sounds: MessageWriter<crate::sound::Sound>,
 ) {
-    let Ok((mut v, mut t)) = q.single_mut() else { return };
+    let Ok(mut v) = q.single_mut() else { return };
+    v.pose[0] = v.pose[1];
     let stick = c.stick * save.flight_sensitivity;
     // The Wii controls push the stick up to dive; the 3DS pitch input raises the nose.
     let forward = if save.invert_pitch { -stick.y } else { stick.y };
@@ -648,7 +652,7 @@ fn fly(
             v.flight.on_water = true;
             v.body.pos.y = v.body.pos.y.max(h.pos.y / SCALE);
             v.body.vel.y = v.body.vel.y.max(0.0);
-            *t = v.body.transform();
+            v.pose[1] = v.body.transform();
             return;
         }
         // A rocket belt stands on the ground and can lift off again.
@@ -659,7 +663,7 @@ fn fly(
             }
             v.body.pos.y = v.body.pos.y.max(h.pos.y / SCALE + 0.05);
             v.body.vel = Vec3::new(v.body.vel.x * 0.8, v.body.vel.y.max(0.0), v.body.vel.z * 0.8);
-            *t = v.body.transform();
+            v.pose[1] = v.body.transform();
             return;
         }
         step_off(&mut *player, &v.body, !gentle);
@@ -667,7 +671,17 @@ fn fly(
         next.set(Mode::Walk);
         return;
     }
-    *t = v.body.transform();
+    v.pose[1] = v.body.transform();
+}
+
+/// Places the vehicle between its last two physics poses.
+fn smooth(fixed: Res<Time<Fixed>>, mut q: Query<(&Vehicle, &mut Transform)>) {
+    let f = fixed.overstep_fraction();
+    for (v, mut t) in &mut q {
+        let [a, b] = v.pose;
+        t.translation = a.translation.lerp(b.translation, f);
+        t.rotation = a.rotation.slerp(b.rotation, f);
+    }
 }
 
 /// Chase camera from the vehicle's own settings (distance and height behind

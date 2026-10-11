@@ -11,7 +11,9 @@ use crate::sound::Sound;
 use crate::vehicles::{self, Kind, Vehicle};
 use crate::world::MainCamera;
 use crate::AppState;
+use bevy::gltf::GltfMaterialName;
 use bevy::prelude::*;
+use bevy::world_serialization::WorldInstanceReady;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Class { Glider, Plane, Rocket }
@@ -41,7 +43,25 @@ const SETS: &[Set] = &[
 struct Item { set: usize, index: u16, pose: Transform, stunt: Option<Stunt> }
 
 #[derive(Resource, Default)]
-struct Items(Vec<Item>);
+pub struct Items(Vec<Item>);
+
+impl Items {
+    /// The pause menu's record rows: a heading, then found / total for each
+    /// set, grouped by the vehicle class that collects it.
+    pub fn record(&self, save: &Save, texts: &crate::lang::Texts) -> Vec<(String, String)> {
+        let mut rows = vec![(String::new(), String::new()), ("Pilotwings Resort".into(), String::new())];
+        for (class, key) in [(Class::Glider, "Vehicle:GLIDER_TYPE"), (Class::Plane, "Vehicle:PLANE_TYPE"), (Class::Rocket, "Vehicle:ROCKET_TYPE")] {
+            let vehicle = texts.pwr(key).unwrap_or_else(|| format!("{class:?}"));
+            for (i, set) in SETS.iter().enumerate().filter(|(_, s)| s.class == class) {
+                let total = self.0.iter().filter(|it| it.set == i).count();
+                let found = save.found.get(set.key).map_or(0, |f| f.len());
+                let name = texts.pwr(set.name).unwrap_or_else(|| set.key.replace('_', " "));
+                rows.push((format!("     {name} · {vehicle}"), format!("{found} / {total}")));
+            }
+        }
+        rows
+    }
+}
 
 #[derive(Component)]
 struct Pickup(usize);
@@ -91,6 +111,7 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, items: Res<Items>, sa
         if save.found.get(set.key).is_some_and(|f| f.contains(&item.index)) { continue; }
         let scene = assets.load(GltfAssetLabel::Scene(0).from_asset(format!("pwr/models/race_{}.glb", set.model)));
         let mut e = commands.spawn((WorldAssetRoot(scene), item.pose, Visibility::Hidden, Pickup(i), DespawnOnExit(AppState::Play)));
+        e.observe(hide_mii_card);
         match (set.model, item.stunt) {
             ("balloonc", _) => { e.insert(Billboard); }
             // Trophies turn on their stands; barrel-roll rings spin the way to roll.
@@ -99,6 +120,15 @@ fn spawn(mut commands: Commands, assets: Res<AssetServer>, items: Res<Items>, sa
             (_, Some(Stunt::RollRight)) => { e.insert(Turn(Vec3::Z * -2.0)); }
             _ => {}
         }
+    }
+}
+
+/// The stunt ring's centre card shows the player's Mii face, which the 3DS
+/// game renders at runtime; there is no such texture here, so it would be a
+/// blank white disc.
+fn hide_mii_card(ready: On<WorldInstanceReady>, children: Query<&Children>, names: Query<&GltfMaterialName>, mut commands: Commands) {
+    for e in children.iter_descendants(ready.entity) {
+        if names.get(e).is_ok_and(|n| n.0.starts_with("miihead")) { commands.entity(e).insert(Visibility::Hidden); }
     }
 }
 

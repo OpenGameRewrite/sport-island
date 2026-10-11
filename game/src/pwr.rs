@@ -9,6 +9,7 @@ use crate::ipoint::{IPointDef, IPoints, Marker, MarkerFade};
 use bevy::math::Affine3A;
 use crate::AppState;
 use bevy::gltf::GltfMaterialExtras;
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::world_serialization::WorldInstanceReady;
 use serde_json::Value;
@@ -246,10 +247,12 @@ pub fn favorites() -> Vec<String> {
 /// The add-on's models carry plain glTF materials; give them the island's
 /// GX lighting and fog. Wii materials carry `extras.gx` and are skipped.
 /// Livery materials (`extras.livery`) show the chosen favourite colour.
+#[allow(clippy::too_many_arguments)]
 fn convert_materials(
     mut commands: Commands,
     q: Query<(Entity, &MeshMaterial3d<StandardMaterial>, Option<&GltfMaterialExtras>)>,
     standard: Res<Assets<StandardMaterial>>,
+    images: Res<Assets<Image>>,
     globals: Res<crate::gx::GxGlobals>,
     save: Res<crate::save::Save>,
     assets: Res<AssetServer>,
@@ -267,17 +270,34 @@ fn convert_materials(
         let h = cache.entry((handle.0.id(), favorite)).or_insert_with(|| {
             let names = favorites.get_or_insert_with(self::favorites);
             let texture = match (livery, names.get(favorite)) {
-                (Some(v), Some(name)) => Some(assets.load(format!("pwr/textures/{v}_{name}.png"))),
+                // Livery UVs run well outside 0..1 and rely on the texture repeating.
+                (Some(v), Some(name)) => Some(assets.load_builder().with_settings(|s: &mut ImageLoaderSettings| {
+                    s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor { address_mode_u: ImageAddressMode::Repeat, address_mode_v: ImageAddressMode::Repeat, ..ImageSamplerDescriptor::linear() });
+                }).load(format!("pwr/textures/{v}_{name}.png"))),
                 _ => m.base_color_texture.clone(),
             };
-            let alpha = if extras["blend"] == "add" { AlphaMode::Add } else { m.alpha_mode };
-            gx.add(crate::gx::textured(texture, alpha, globals.0.clone()))
+            let alpha = match m.alpha_mode {
+                _ if extras["blend"] == "add" => AlphaMode::Add,
+                // Many 3DS materials blend by alpha with depth writes on but are
+                // fully opaque; drawn as transparent they sort badly against themselves.
+                AlphaMode::Blend if m.base_color_texture.as_ref().and_then(|t| images.get(t)).is_some_and(opaque) => AlphaMode::Opaque,
+                a => a,
+            };
+            let mut mat = crate::gx::textured(texture, alpha, globals.0.clone());
+            // The painted liveries come out upside down against the model's UVs.
+            if livery.is_some() { mat.set_srt(0, [1.0, -1.0, 0.0, 0.0, 0.0]); }
+            gx.add(mat)
         }).clone();
         if let Some([u, v]) = extras["scroll"].as_array().map(|a| [0, 1].map(|i| a.get(i).and_then(Value::as_f64).unwrap_or(0.0) as f32)) {
             scrolling.0.insert(h.id(), Vec2::new(u, v));
         }
         commands.entity(e).remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(h));
     }
+}
+
+/// Whether every texel of an 8-bit RGBA image is fully opaque.
+fn opaque(image: &Image) -> bool {
+    image.texture_descriptor.format.block_copy_size(None) == Some(4) && image.data.as_ref().is_some_and(|d| d.chunks_exact(4).all(|p| p[3] == 255))
 }
 
 #[cfg(test)]

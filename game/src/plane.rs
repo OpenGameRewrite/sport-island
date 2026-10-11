@@ -555,11 +555,16 @@ fn tint_bullets(cache: Res<crate::gx::GxMaterials>, mut materials: ResMut<Assets
 fn speedometer_spawn(mut commands: Commands, font: Res<crate::lang::UiFont>) {
     commands.spawn((Node { position_type: PositionType::Absolute, bottom: px(24), right: px(24), padding: UiRect::axes(px(16), px(10)), border: UiRect::all(px(3)), border_radius: BorderRadius::all(px(16)), ..default() }, BackgroundColor(crate::menu::PANEL), BorderColor::all(crate::menu::OUTLINE), Text::new(""), TextFont::from(font.0.clone()).with_font_size(FontSize::Px(19.0)), TextColor(crate::menu::INK), Speedometer));
 }
-fn speedometer(save: Res<Save>, texts: Res<crate::lang::Texts>, planes: Query<&Plane>, mut text: Single<(&mut Text, &mut Visibility), With<Speedometer>>) {
-    let Ok(p) = planes.single() else { *text.1 = Visibility::Hidden; return; };
-    *text.1 = if save.speedometer {Visibility::Inherited} else {Visibility::Hidden};
+fn speedometer(save: Res<Save>, texts: Res<crate::lang::Texts>, planes: Query<&Plane>, vehicles: Query<&crate::vehicles::Vehicle>, mut text: Single<(&mut Text, &mut Visibility), With<Speedometer>>) {
     use crate::lang::Ui;
-    text.0.set_if_neq(Text::new(format!("{}: {:.0} {}\n{}: {:.0}%\n{}: {:.0}%", texts.ui(Ui::Speed), p.vel.length()*60.0, texts.ui(Ui::Units), texts.ui(Ui::Engine), p.throttle*100.0, texts.ui(if p.boost_sign >= 0.0 {Ui::Boost} else {Ui::Slow}), p.boost_force*100.0)));
+    let readout = if let Ok(p) = planes.single() {
+        format!("{}: {:.0} {}\n{}: {:.0}%\n{}: {:.0}%", texts.ui(Ui::Speed), p.vel.length()*60.0, texts.ui(Ui::Units), texts.ui(Ui::Engine), p.throttle*100.0, texts.ui(if p.boost_sign >= 0.0 {Ui::Boost} else {Ui::Slow}), p.boost_force*100.0)
+    } else if let Ok(v) = vehicles.single() {
+        // In the Wii planes' units; the turbo meter has its own gauge.
+        format!("{}: {:.0} {}", texts.ui(Ui::Speed), v.body.vel.length()*crate::pwr::SCALE, texts.ui(Ui::Units))
+    } else { *text.1 = Visibility::Hidden; return; };
+    *text.1 = if save.speedometer {Visibility::Inherited} else {Visibility::Hidden};
+    text.0.set_if_neq(Text::new(readout));
 }
 fn projectile_billboards(cam: Single<&GlobalTransform, With<MainCamera>>, parents: Query<&GlobalTransform>, mut sprites: Query<(Option<&ChildOf>, &mut Transform), With<ProjectileSprite>>) {
     for (parent, mut t) in &mut sprites {
