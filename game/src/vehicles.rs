@@ -983,6 +983,15 @@ mod tests {
     }
 
     #[test]
+    fn mirrored_transform_keeps_which_wing_is_up() {
+        // Leaning left in the 3DS frame raises the right wing (+X); the stunt
+        // rings read that from the drawn transform.
+        let (mut f, mut b) = plane(21.0);
+        cruise(&mut f, &mut b, PlaneInput { lean_left: true, ..default() }, PlaneParams::default(), 2.0);
+        assert!((b.transform().rotation * Vec3::X).y > 0.8);
+    }
+
+    #[test]
     fn mirrored_transform_keeps_heading() {
         let mut b = Body::new(1.0, Vec3::ONE);
         b.rot = Quat::from_rotation_y(0.4);
