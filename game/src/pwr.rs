@@ -293,6 +293,10 @@ fn convert_materials(
                 return gx.add(flame(texture, mask, globals.0.clone()));
             }
             let mut mat = crate::gx::textured(texture, alpha, globals.0.clone());
+            // Glider thermals: the 3DS multiplies the swirl by a second mask
+            // and fades it up close, which the extraction does not keep; thin
+            // it out instead so the columns stay see-through.
+            if name.is_some_and(|n| n.0 == "mat_thin.mat") { mat.tev.mat_color.w = 0.25; }
             // The painted liveries come out upside down against the model's UVs.
             if livery.is_some() { mat.set_srt(0, [1.0, -1.0, 0.0, 0.0, 0.0]); }
             gx.add(mat)

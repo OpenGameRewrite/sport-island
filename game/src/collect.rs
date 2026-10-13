@@ -179,7 +179,8 @@ fn turn(time: Res<Time>, mut q: Query<(&Turn, &mut Transform)>) {
 /// Whether the plane shows a stunt: `up` is its displayed up axis, `right`
 /// its right wing, `roll` the barrel roll under way or just finished.
 fn stunt_done(stunt: Stunt, up: Vec3, right: Vec3, roll: f32) -> bool {
-    let lean = up.dot(right);
+    // Banked right puts the right wing below the left (about 25° or more).
+    let lean = -right.y;
     match stunt {
         Stunt::LeanLeft => lean < -0.42,
         Stunt::LeanRight => lean > 0.42,
@@ -209,7 +210,7 @@ fn pick(
     // model's with its drawn bank (that model cannot roll over).
     let (up, right, roll) = match (plane, vehicle) {
         // The Wii plane frame's +X is its left wing.
-        (Some(p), _) => (t.rotation * Quat::from_rotation_z(p.bank()) * Vec3::Y, -(t.rotation * Vec3::X), 0.0),
+        (Some(p), _) => { let shown = t.rotation * Quat::from_rotation_z(p.bank()); (shown * Vec3::Y, -(shown * Vec3::X), 0.0) }
         (_, Some(v)) => (t.rotation * Vec3::Y, t.rotation * Vec3::X, v.flight.recent_roll()),
         _ => (t.rotation * Vec3::Y, t.rotation * Vec3::X, 0.0),
     };
@@ -279,7 +280,8 @@ fn stunt_hint(
     let ahead = (flying_class(&save, &vehicles, &planes) == Some(Class::Plane)).then(|| {
         let (eye, fwd) = (cam.translation(), cam.forward().as_vec3());
         pickups.iter().filter_map(|p| { let it = &items.0[p.0]; it.stunt.map(|s| (s, it.pose.translation - eye)) })
-            .filter(|(_, to)| to.length() < 2500.0 && to.normalize_or_zero().dot(fwd) > 0.8)
+            // Only the ring just ahead: within about 100 m and near the centre of view.
+            .filter(|(_, to)| to.length() < 1000.0 && to.normalize_or_zero().dot(fwd) > 0.9)
             .min_by(|a, b| a.1.length_squared().total_cmp(&b.1.length_squared())).map(|(s, _)| s)
     }).flatten();
     let Some(stunt) = ahead else { vis.set_if_neq(Visibility::Hidden); return };
@@ -303,9 +305,12 @@ mod tests {
     #[test]
     fn stunts_need_the_right_attitude() {
         let (right, level) = (Vec3::X, Vec3::Y);
-        assert!(!stunt_done(Stunt::LeanRight, level, right, 0.0));
-        assert!(stunt_done(Stunt::LeanRight, Vec3::new(0.7, 0.7, 0.0), right, 0.0));
-        assert!(stunt_done(Stunt::LeanLeft, Vec3::new(-0.7, 0.7, 0.0), right, 0.0));
+        assert!(!stunt_done(Stunt::LeanRight, level, right, 0.0) && !stunt_done(Stunt::LeanLeft, level, right, 0.0));
+        // Banked right: up tilts right and the right wing dips.
+        let (up, wing) = (Vec3::new(0.7, 0.7, 0.0), Vec3::new(0.7, -0.7, 0.0));
+        assert!(stunt_done(Stunt::LeanRight, up, wing, 0.0) && !stunt_done(Stunt::LeanLeft, up, wing, 0.0));
+        let (up, wing) = (Vec3::new(-0.7, 0.7, 0.0), Vec3::new(0.7, 0.7, 0.0));
+        assert!(stunt_done(Stunt::LeanLeft, up, wing, 0.0) && !stunt_done(Stunt::LeanRight, up, wing, 0.0));
         assert!(stunt_done(Stunt::Inverted, Vec3::NEG_Y, right, 0.0));
         assert!(stunt_done(Stunt::RollRight, level, right, 1.0) && !stunt_done(Stunt::RollRight, level, right, -1.0));
     }
