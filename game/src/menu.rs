@@ -45,6 +45,13 @@ fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWind
     use bevy::window::{MonitorSelection, WindowMode};
     let mode = if save.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
     if window.mode != mode { window.mode = mode; }
+    if save.is_changed() && !save.fullscreen {
+        let cur_w = window.resolution.width() as u32;
+        let cur_h = window.resolution.height() as u32;
+        if cur_w != save.resolution_w || cur_h != save.resolution_h {
+            window.resolution.set(save.resolution_w as f32, save.resolution_h as f32);
+        }
+    }
 }
 pub fn preview_controls(mut m: ResMut<Menu>) {
     m.open = true; m.sel = 0;
@@ -153,7 +160,12 @@ fn close(m: &mut Menu, time: &mut Time<Virtual>, c: &mut Controls) {
     c.shoot = false; c.jump = false; c.board = false; c.flare = false;
 }
 #[allow(clippy::too_many_arguments)]
-pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<State<AppState>>, mut next: ResMut<NextState<AppState>>, mut vtime: ResMut<Time<Virtual>>, mut tod: ResMut<TimeOfDay>, mut save: ResMut<Save>, mut texts: ResMut<Texts>, langs: Res<Languages>, points: Res<IPoints>, extras: Option<Res<crate::collect::Items>>, mut exit: MessageWriter<AppExit>) {
+pub fn pause_input(
+    mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<State<AppState>>, mut next: ResMut<NextState<AppState>>,
+    mut vtime: ResMut<Time<Virtual>>, mut tod: ResMut<TimeOfDay>, mut save: ResMut<Save>, mut texts: ResMut<Texts>,
+    langs: Res<Languages>, points: Res<IPoints>, extras: Option<Res<crate::collect::Items>>, mut exit: MessageWriter<AppExit>,
+    monitors: Query<(&bevy::window::Monitor, Has<bevy::window::PrimaryMonitor>)>,
+) {
     let title = *state.get() == AppState::Title;
     if !title && c.speedometer { save.speedometer = !save.speedometer; save.store(); }
     if !m.open {
@@ -172,9 +184,10 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
     if !title && c.record { m.page = Page::Record; m.scroll = 0; m.direct_record = false; return; }
     if m.page == Page::Settings {
         if c.back || c.pause { m.page = Page::Main; m.sel = 5; return; }
-        navigate(&mut m.sel, if crate::pwr::available() { 7 } else { 6 }, &c);
+        navigate(&mut m.sel, if crate::pwr::available() { 10 } else { 9 }, &c);
         let step = c.right as i32 - c.left as i32 + c.confirm as i32;
         if step != 0 {
+            let mon = monitors.iter().find(|(_, is_prim)| *is_prim).or_else(|| monitors.iter().next()).map(|(m, _)| (m.physical_width, m.physical_height));
             match m.sel {
                 0 => save.flight_sensitivity = (save.flight_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
                 1 => save.look_sensitivity = (save.look_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
@@ -182,6 +195,24 @@ pub fn pause_input(mut c: ResMut<Controls>, mut m: ResMut<Menu>, state: Res<Stat
                 3 => save.invert_pitch = !save.invert_pitch,
                 4 => save.speedometer = !save.speedometer,
                 5 => save.fullscreen = !save.fullscreen,
+                6 => {
+                    save.aspect_ratio = ((save.aspect_ratio as i32 + step).rem_euclid(crate::save::ASPECT_RATIO_LABELS.len() as i32)) as u8;
+                    let avail = crate::save::available_resolutions(save.aspect_ratio, mon);
+                    if !avail.iter().any(|(w, h, _)| *w == save.resolution_w && *h == save.resolution_h) {
+                        if let Some(best) = avail.iter().min_by_key(|(w, _, _)| (*w as i32 - save.resolution_w as i32).abs()) {
+                            save.resolution_w = best.0;
+                            save.resolution_h = best.1;
+                        }
+                    }
+                }
+                7 => {
+                    let avail = crate::save::available_resolutions(save.aspect_ratio, mon);
+                    let cur_idx = avail.iter().position(|(w, h, _)| *w == save.resolution_w && *h == save.resolution_h).unwrap_or(0);
+                    let next_idx = (cur_idx as i32 + step).rem_euclid(avail.len() as i32) as usize;
+                    save.resolution_w = avail[next_idx].0;
+                    save.resolution_h = avail[next_idx].1;
+                }
+                8 => save.msaa = ((save.msaa as i32 + step).rem_euclid(crate::save::MSAA_LABELS.len() as i32)) as u8,
                 _ => save.plane_wii_style = !save.plane_wii_style,
             }
             save.store();
@@ -249,6 +280,7 @@ fn choice(v: impl std::fmt::Display) -> String { format!("‹  {v}  ›") }
 fn render(
     (m, state, texts, langs, save, tod, points, c, extras): (Res<Menu>, Res<State<AppState>>, Res<Texts>, Res<Languages>, Res<Save>, Res<TimeOfDay>, Res<IPoints>, Res<Controls>, Option<Res<crate::collect::Items>>),
     window: Single<&Window>,
+    monitors: Query<(&bevy::window::Monitor, Has<bevy::window::PrimaryMonitor>)>,
     mut root: Single<&mut Visibility, With<MenuRoot>>,
     mut panel: Single<&mut Node, (With<MenuPanel>, Without<Item>, Without<Footer>)>,
     mut header: Single<(&mut Text, &mut TextFont), (With<MenuHeader>, Without<MenuLine>, Without<MenuValue>, Without<MenuHelp>)>,
@@ -283,6 +315,21 @@ fn render(
         }
         Page::Settings => {
             header.0.set_if_neq(Text::new(texts.ui(Ui::Settings))); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
+            let mon = monitors.iter().find(|(_, is_prim)| *is_prim).or_else(|| monitors.iter().next()).map(|(m, _)| (m.physical_width, m.physical_height));
+            let aspect_label = match save.aspect_ratio {
+                0 => {
+                    let detected = mon.map(|(w, h)| crate::save::detect_aspect_ratio(w, h)).unwrap_or("16:9");
+                    format!("Auto ({detected})")
+                }
+                5 => texts.ui(Ui::All).to_string(),
+                idx => crate::save::ASPECT_RATIO_LABELS[idx as usize].to_string(),
+            };
+            let avail = crate::save::available_resolutions(save.aspect_ratio, mon);
+            let res_label = avail.iter().find(|(w, h, _)| *w == save.resolution_w && *h == save.resolution_h)
+                .map(|(_, _, label)| label.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| format!("{} × {} (Custom)", save.resolution_w, save.resolution_h));
+            let msaa_idx = (save.msaa as usize).min(crate::save::MSAA_LABELS.len() - 1);
             let mut rows: Vec<(String, String)> = vec![
                 (texts.ui(Ui::FlightSensitivity).into(), choice(format!("{:.0}%", save.flight_sensitivity * 100.0))),
                 (texts.ui(Ui::LookSensitivity).into(), choice(format!("{:.0}%", save.look_sensitivity * 100.0))),
@@ -290,6 +337,9 @@ fn render(
                 (texts.ui(Ui::InvertPitch).into(), choice(onoff(save.invert_pitch))),
                 (texts.ui(Ui::Speedometer).into(), choice(onoff(save.speedometer))),
                 (texts.ui(Ui::Fullscreen).into(), choice(onoff(save.fullscreen))),
+                (texts.ui(Ui::AspectRatio).into(), choice(aspect_label)),
+                (texts.ui(Ui::Resolution).into(), choice(res_label)),
+                (texts.ui(Ui::AntiAliasing).into(), choice(crate::save::MSAA_LABELS[msaa_idx])),
             ];
             if crate::pwr::available() { rows.push((texts.ui(Ui::PlaneHandling).into(), choice(texts.ui(if save.plane_wii_style { Ui::WiiStyle } else { Ui::Original })))); }
             rows
@@ -340,7 +390,7 @@ fn render(
     }
     let record = m.page == Page::Record;
     // The long pages (record, controls) use compact rows.
-    let pad = if record {px(2)} else if wide {px(3)} else {px(8)};
+    let pad = if record {px(2)} else if wide {px(3)} else if m.page == Page::Settings {px(5)} else {px(8)};
     for (item, hovered, mut node, mut bg, mut border, mut transform) in &mut items {
         let display = if item.0 < rows.len() {Display::Flex} else {Display::None};
         if node.display != display { node.display = display; }
@@ -450,5 +500,35 @@ mod tests {
         assert!(w.resource::<Menu>().page==Page::Record);
         w.run_system_once(pause_input).unwrap();
         assert!(!w.resource::<Menu>().open && !w.resource::<Time<Virtual>>().is_paused());
+    }
+    #[test] fn settings_navigation_cycles_resolution_and_msaa() {
+        let mut w = World::new();
+        w.insert_resource(State::new(AppState::Play)); w.init_resource::<NextState<AppState>>();
+        w.insert_resource(Menu { open: true, page: Page::Settings, sel: 6, ..default() });
+        w.insert_resource(Controls { right: true, ..default() });
+        w.init_resource::<Time<Virtual>>(); w.insert_resource(TimeOfDay(0));
+        let mut save = Save::default();
+        save.aspect_ratio = 1;
+        save.resolution_w = 1600;
+        save.resolution_h = 900;
+        save.msaa = 0;
+        w.insert_resource(save);
+        w.insert_resource(Texts::default()); w.insert_resource(Languages(vec![])); w.insert_resource(IPoints(vec![]));
+        w.init_resource::<Messages<AppExit>>();
+
+        w.run_system_once(pause_input).unwrap();
+        assert_eq!(w.resource::<Save>().aspect_ratio, 2);
+
+        w.resource_mut::<Menu>().sel = 7;
+        let prev_res = (w.resource::<Save>().resolution_w, w.resource::<Save>().resolution_h);
+        w.insert_resource(Controls { right: true, ..default() });
+        w.run_system_once(pause_input).unwrap();
+        let new_res = (w.resource::<Save>().resolution_w, w.resource::<Save>().resolution_h);
+        assert_ne!(prev_res, new_res);
+
+        w.resource_mut::<Menu>().sel = 8;
+        w.insert_resource(Controls { right: true, ..default() });
+        w.run_system_once(pause_input).unwrap();
+        assert_eq!(w.resource::<Save>().msaa, 1);
     }
 }

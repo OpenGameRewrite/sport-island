@@ -117,6 +117,7 @@ pub enum Ui {
     South, East, West, North, Escape, Select, RightStick, Mouse, Fullscreen, GroundAssist,
     YellowGreen, Green, SkyBlue, Pink, Purple, Brown, Black,
     PlaneHandling, Original, WiiStyle,
+    Resolution, AntiAliasing, AspectRatio, All,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -186,6 +187,10 @@ const UI: &[[&str; 5]] = &[
     ["3DS plane handling", "Pilotage des avions 3DS", "Steuerung der 3DS-Flugzeuge", "Manejo de los aviones de 3DS", "Comandi degli aerei 3DS"],
     ["Original", "Original", "Original", "Original", "Originale"],
     ["Wii-style", "Style Wii", "Wii-Stil", "Estilo Wii", "Stile Wii"],
+    ["Resolution", "Résolution", "Auflösung", "Resolución", "Risoluzione"],
+    ["Anti-aliasing", "Anticrénelage", "Kantenglättung", "Antialiasing", "Antialiasing"],
+    ["Aspect ratio", "Format d'image", "Seitenverhältnis", "Relación de aspecto", "Rapporto d'aspetto"],
+    ["All", "Tous", "Alle", "Todas", "Tutti"],
 ];
 
 const ACTIONS: &[[&str; 5]] = &[

@@ -58,11 +58,30 @@ pub fn read_json<T: serde::de::DeserializeOwned>(rel: &str) -> T {
 }
 
 fn main() {
-    App::new()
-        .add_plugins(
+    let present_mode = if std::env::var_os("SI_BENCH").is_some() {
+        bevy::window::PresentMode::Immediate
+    } else {
+        bevy::window::PresentMode::AutoVsync
+    };
+    let mut app = App::new();
+    if std::env::var_os("SI_BENCH").is_some() {
+        app.insert_resource(bevy::winit::WinitSettings {
+            focused_mode: bevy::winit::UpdateMode::Continuous,
+            unfocused_mode: bevy::winit::UpdateMode::Continuous,
+        });
+    }
+    let initial_save = crate::save::load();
+    let initial_mode = if initial_save.fullscreen {
+        bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
+    } else {
+        bevy::window::WindowMode::Windowed
+    };
+    app.add_plugins(
             DefaultPlugins
                 .set(AssetPlugin { file_path: asset_dir().to_string_lossy().into_owned(), ..default() })
-                .set(WindowPlugin { primary_window: Some(Window { title: "Sport Island".into(), resolution: (1600, 900).into(),
+                .set(WindowPlugin { primary_window: Some(Window { title: "Sport Island".into(), resolution: (initial_save.resolution_w, initial_save.resolution_h).into(),
+                    mode: initial_mode,
+                    present_mode,
                     // Bevy assumes focus until Windows reports otherwise; a window opened in the
                     // background would then confine the cursor. Wait for a real focus event.
                     focused: false, ..default() }), ..default() }),
