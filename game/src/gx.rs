@@ -56,6 +56,7 @@ pub struct GxMaterial {
     #[storage(17, read_only)]
     pub globals: Handle<ShaderBuffer>,
     pub alpha_mode: AlphaMode,
+    pub depth_bias: f32,
     /// Texture SRTs (scale x/y, rotation degrees, translation x/y) per texcoord, for animation.
     pub srt: [[f32; 5]; 8],
     /// Unanimated CLR0 targets (material, -, ambient, -, C0..C2, K0..K3) for masked colour animation.
@@ -65,6 +66,7 @@ pub struct GxMaterial {
 impl Material for GxMaterial {
     fn fragment_shader() -> ShaderRef { "embedded://sport_island/gx.wesl".into() }
     fn alpha_mode(&self) -> AlphaMode { self.alpha_mode }
+    fn depth_bias(&self) -> f32 { self.depth_bias }
 }
 
 impl GxMaterial {
@@ -102,7 +104,7 @@ pub fn shaded(color: Color, globals: Handle<ShaderBuffer>) -> GxMaterial {
     tev.stages[0] = UVec4::new(15 << 12 | 15 << 8 | 15 << 4 | 10 | 1 << 19, 7 << 13 | 7 << 10 | 7 << 7 | 5 << 4 | 1 << 19, 0, 0);
     tev.mat_color = Vec4::new(c.red, c.green, c.blue, 1.0);
     tev.alpha_test = UVec4::new(7 | 7 << 4, 0, 0, 0);
-    GxMaterial { tev, t0: None, t1: None, t2: None, t3: None, t4: None, t5: None, t6: None, t7: None, globals, alpha_mode: AlphaMode::Opaque, srt: [[1.0, 1.0, 0.0, 0.0, 0.0]; 8], base: [Vec4::ONE; 11] }
+    GxMaterial { tev, t0: None, t1: None, t2: None, t3: None, t4: None, t5: None, t6: None, t7: None, globals, alpha_mode: AlphaMode::Opaque, depth_bias: 0.0, srt: [[1.0, 1.0, 0.0, 0.0, 0.0]; 8], base: [Vec4::ONE; 11] }
 }
 
 /// A texture modulated by the lit, fogged material colour: what non-Wii
@@ -310,21 +312,31 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
     // Blending: PE CMODE0 (enable, dst factor bits 5-7, src factor bits 8-10).
     let cm = bp(0x41);
     let (blend, dst, src) = (cm & 1 != 0, (cm >> 5) & 7, (cm >> 8) & 7);
-    // An enabled blend unit does not make an opaque, depth-writing GX draw
-    // translucent. Putting these meshes in Bevy's transparent pass lets the
-    // island's large water meshes draw over the plane and other solid objects.
-    let alpha_mode = if !def.xlu && bp(0x40) & 16 != 0 {
-        if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 { AlphaMode::Mask(0.0) } else { AlphaMode::Opaque }
-    } else if blend && dst == 1 {
-        AlphaMode::Add
-    } else if blend && src == 0 && dst == 2 {
-        AlphaMode::Multiply
-    } else if blend || def.xlu {
-        AlphaMode::Blend
-    } else if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 {
-        AlphaMode::Mask(0.0)
-    } else {
-        AlphaMode::Opaque
+    // The original sky domes never wrote to depth (bp(0x40) bit 4 was 0).
+    // In Bevy, drawing them in the transparent pass with depth_bias ensures
+    // the sky dome is rendered first as background without writing depth,
+    // the sunset glow / moon halo blend smoothly over it without being clipped,
+    // and clouds render behind world transparent objects like balloons.
+    let (alpha_mode, depth_bias) = match def.name.as_str() {
+        "mt_sky2" | "mt_sky4" | "vr_star" => (AlphaMode::Blend, 150_000.0),
+        "mt_za_cloud2" | "vr_x_moon" => (AlphaMode::Blend, 120_000.0),
+        "mt_za_cloud" => (AlphaMode::Blend, 100_000.0),
+        _ => {
+            let mode = if !def.xlu && bp(0x40) & 16 != 0 {
+                if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 { AlphaMode::Mask(0.0) } else { AlphaMode::Opaque }
+            } else if blend && dst == 1 {
+                AlphaMode::Add
+            } else if blend && src == 0 && dst == 2 {
+                AlphaMode::Multiply
+            } else if blend || def.xlu {
+                AlphaMode::Blend
+            } else if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 {
+                AlphaMode::Mask(0.0)
+            } else {
+                AlphaMode::Opaque
+            };
+            (mode, 0.0)
+        }
     };
     // Bit 0: fogged; bit 8: which of the scene's fogs (only indices 0 and 1 are defined).
     let mut flags = if def.fog >= 0 { 1 | (def.fog.min(1) as u32) << 8 } else { 0 };
@@ -342,7 +354,7 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
     }
     let [t0, t1, t2, t3, t4, t5, t6, t7] = tex;
     let base = [tev.mat_color, Vec4::ONE, tev.amb_color, Vec4::ONE, tev.regs[1], tev.regs[2], tev.regs[3], tev.konst[0], tev.konst[1], tev.konst[2], tev.konst[3]];
-    GxMaterial { tev, t0, t1, t2, t3, t4, t5, t6, t7, globals, alpha_mode, srt, base }
+    GxMaterial { tev, t0, t1, t2, t3, t4, t5, t6, t7, globals, alpha_mode, depth_bias, srt, base }
 }
 
 /// Swap each glTF StandardMaterial for its GX equivalent as scenes spawn.

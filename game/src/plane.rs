@@ -58,6 +58,8 @@ pub struct Plane {
     gun_cooldown: u32,
     previous: Transform,
     boost_left: u8,
+    boost_cooldown: u8,
+    boost_sound: bool,
     boost_held: bool,
     boost_force: f32,
     boost_sign: f32,
@@ -86,7 +88,7 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0, jet: false, turbo: 1.0, burning: false }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_cooldown: 0, boost_sound: false, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0, jet: false, turbo: 1.0, burning: false }
     }
     /// One original-rate physics tick, independent of rendering and collision.
     /// Displayed bank (radians, right positive) on top of the flight model.
@@ -123,13 +125,18 @@ impl Plane {
         // envelope. Adapt it to trigger/key presses, never continuous held thrust.
         let accel = c.boost - c.slow;
         let held = accel.abs() > 0.15;
-        if held && !self.boost_held && self.boost_left == 0 {
+        if held && !self.boost_held && self.boost_cooldown == 0 {
             self.boost_left = 25;
+            self.boost_cooldown = 50;
             self.boost_sign = accel.signum();
+            if self.boost_sign > 0.0 {
+                self.boost_sound = true;
+            }
         }
         self.boost_held = held;
         self.boost_force = ((self.boost_force + if self.boost_left > 0 { 1.0 } else { 0.0 }) * 0.993).min(1.0);
         self.boost_left = self.boost_left.saturating_sub(1);
+        self.boost_cooldown = self.boost_cooldown.saturating_sub(1);
         if self.jet {
             // Held boost burns the turbo meter (about 3 s full), rest refills it (about 6 s).
             let burning = c.boost > 0.15 && self.turbo > 0.0;
@@ -477,6 +484,7 @@ fn fly(
     mut next: ResMut<NextState<Mode>>,
     mut q: Query<(&mut Plane, &mut Transform)>,
     mut player: Single<(&mut Player, &mut Transform, &mut Visibility), Without<Plane>>,
+    mut sounds: MessageWriter<crate::sound::Sound>,
 ) {
     let Ok((mut p, mut t)) = q.single_mut() else { return };
     let from = t.translation;
@@ -492,6 +500,12 @@ fn fly(
     let pitch = if save.invert_pitch {-controls.stick.y} else {controls.stick.y};
     p.water_contact(&mut t, water.map(|h| (h.t, if h.n.y < 0.0 {-h.n} else {h.n}, h.pos.y)), pitch);
     p.step_with_surface(&mut t, &controls, save.invert_pitch, surface);
+    if p.boost_sound {
+        p.boost_sound = false;
+        if !p.jet {
+            sounds.write(crate::sound::Sound::effect("SE_PLN_TURBO_PLUS", None));
+        }
+    }
 
     // Terrain / sea: crash and bail out with the parachute.
     let step = p.vel;
@@ -941,6 +955,36 @@ mod tests {
         plane.step(&mut pose, &controls, false);
         assert!(plane.boost_force > 0.9, "fresh press must boost again");
         assert!(plane.boost_left > 0);
+    }
+
+    #[test]
+    fn boost_cooldown_enforces_sound_duration() {
+        let mut pose = Transform::IDENTITY;
+        let mut plane = Plane::new(pose, 7.0);
+        let mut controls = Controls { boost: 1.0, ..default() };
+        plane.step(&mut pose, &controls, false);
+        assert!(plane.boost_sound, "boost must trigger sound flag");
+        assert_eq!(plane.boost_cooldown, 49);
+        plane.boost_sound = false;
+
+        // Release boost after 10 frames
+        controls.boost = 0.0;
+        for _ in 0..10 { plane.step(&mut pose, &controls, false); }
+        // Attempt re-press while cooldown is still active
+        controls.boost = 1.0;
+        plane.step(&mut pose, &controls, false);
+        assert!(!plane.boost_sound, "re-press within cooldown must not retrigger sound");
+
+        // Let remaining cooldown expire
+        controls.boost = 0.0;
+        for _ in 0..40 { plane.step(&mut pose, &controls, false); }
+        assert_eq!(plane.boost_cooldown, 0);
+
+        // Fresh press after cooldown
+        controls.boost = 1.0;
+        plane.step(&mut pose, &controls, false);
+        assert!(plane.boost_sound, "press after cooldown must trigger sound");
+        assert_eq!(plane.boost_left, 24);
     }
 
     #[test]

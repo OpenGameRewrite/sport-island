@@ -58,11 +58,15 @@ pub fn plugin(app: &mut App) {
         .add_systems(Update, orbit_camera.run_if(in_state(AppState::Title)))
         .add_systems(Update, (render, cursor, window_mode));
 }
-fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWindow>>) {
+fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWindow>>, mut applied: Local<Option<(u32, u32, bool)>>) {
     use bevy::window::{MonitorSelection, WindowMode};
+    let target = (save.resolution_w, save.resolution_h, save.fullscreen);
+    if applied.as_ref() == Some(&target) { return; }
+    let is_first = applied.is_none();
+    *applied = Some(target);
     let mode = if save.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
     if window.mode != mode { window.mode = mode; }
-    if save.is_changed() && !save.fullscreen {
+    if !is_first && !save.fullscreen {
         let cur_w = window.resolution.width() as u32;
         let cur_h = window.resolution.height() as u32;
         if cur_w != save.resolution_w || cur_h != save.resolution_h {
@@ -630,5 +634,32 @@ mod tests {
         assert_eq!(w.resource::<Save>().aspect_ratio, 2);
         assert_eq!(w.resource::<Save>().msaa, 1);
         assert_ne!(w.resource::<Save>().resolution_w, 1600);
+    }
+    #[test] fn language_change_does_not_alter_windowed_resolution() {
+        let mut w = World::new();
+        let mut save = Save::default();
+        save.fullscreen = false;
+        save.resolution_w = 1280;
+        save.resolution_h = 720;
+        w.insert_resource(save);
+        let win = Window { resolution: (1024u32, 600u32).into(), ..default() };
+        let win_entity = w.spawn((win, PrimaryWindow)).id();
+        let sys = w.register_system(window_mode);
+        w.run_system(sys).unwrap();
+        let cur = w.get::<Window>(win_entity).unwrap().resolution.clone();
+        assert_eq!((cur.width() as u32, cur.height() as u32), (1024, 600));
+
+        // Changing language triggers save change, but must NOT change resolution
+        w.resource_mut::<Save>().lang = Some("ES".into());
+        w.run_system(sys).unwrap();
+        let cur = w.get::<Window>(win_entity).unwrap().resolution.clone();
+        assert_eq!((cur.width() as u32, cur.height() as u32), (1024, 600));
+
+        // When resolution actually changes, window_mode updates resolution
+        w.resource_mut::<Save>().resolution_w = 1600;
+        w.resource_mut::<Save>().resolution_h = 900;
+        w.run_system(sys).unwrap();
+        let cur = w.get::<Window>(win_entity).unwrap().resolution.clone();
+        assert_eq!((cur.width() as u32, cur.height() as u32), (1600, 900));
     }
 }
