@@ -11,10 +11,27 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy::picking::hover::Hovered;
 use bevy::ui_widgets::{Activate, Button};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingGraphics {
+    pub fullscreen: bool,
+    pub aspect_ratio: u8,
+    pub resolution_w: u32,
+    pub resolution_h: u32,
+    pub msaa: u8,
+}
+
 #[derive(Resource, Default)]
-pub struct Menu { pub open: bool, page: Page, sel: usize, scroll: usize, capturing: bool, direct_record: bool }
-#[derive(Default, PartialEq, Clone, Copy)]
-enum Page { #[default] Main, Record, Controls, Settings }
+pub struct Menu {
+    pub open: bool,
+    page: Page,
+    sel: usize,
+    scroll: usize,
+    capturing: bool,
+    direct_record: bool,
+    pending_graphics: Option<PendingGraphics>,
+}
+#[derive(Default, PartialEq, Clone, Copy, Debug)]
+enum Page { #[default] Main, Record, Controls, Settings, Graphics }
 #[derive(Component)] struct MenuRoot;
 #[derive(Component)] struct MenuPanel;
 #[derive(Component)] struct MenuLine(usize);
@@ -55,7 +72,7 @@ fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWind
 }
 pub fn preview_controls(mut m: ResMut<Menu>) {
     m.open = true; m.sel = 0;
-    m.page = match std::env::var("SI_MENU").as_deref() {Ok("settings")=>Page::Settings,Ok("record")=>Page::Record,_=>Page::Controls};
+    m.page = match std::env::var("SI_MENU").as_deref() {Ok("settings")=>Page::Settings,Ok("graphics")=>Page::Graphics,Ok("record")=>Page::Record,_=>Page::Controls};
     if let Some(s) = std::env::var("SI_MENU_SCROLL").ok().and_then(|s| s.parse().ok()) { m.scroll = s; }
 }
 fn system_ui(window: &Window, keys: &ButtonInput<KeyCode>) -> bool {
@@ -156,7 +173,7 @@ fn record_scroll(scroll: usize, c: &Controls, total: usize) -> usize {
     (scroll as i32 + c.down as i32 - c.up as i32 + (c.right as i32 - c.left as i32) * LINES as i32).clamp(0, total.saturating_sub(LINES) as i32) as usize
 }
 fn close(m: &mut Menu, time: &mut Time<Virtual>, c: &mut Controls) {
-    m.open = false; m.direct_record = false; time.unpause();
+    m.open = false; m.direct_record = false; m.pending_graphics = None; time.unpause();
     c.shoot = false; c.jump = false; c.board = false; c.flare = false;
 }
 #[allow(clippy::too_many_arguments)]
@@ -184,38 +201,88 @@ pub fn pause_input(
     if !title && c.record { m.page = Page::Record; m.scroll = 0; m.direct_record = false; return; }
     if m.page == Page::Settings {
         if c.back || c.pause { m.page = Page::Main; m.sel = 5; return; }
-        navigate(&mut m.sel, if crate::pwr::available() { 10 } else { 9 }, &c);
+        let graphics_row = if crate::pwr::available() { 6 } else { 5 };
+        navigate(&mut m.sel, graphics_row + 1, &c);
         let step = c.right as i32 - c.left as i32 + c.confirm as i32;
         if step != 0 {
-            let mon = monitors.iter().find(|(_, is_prim)| *is_prim).or_else(|| monitors.iter().next()).map(|(m, _)| (m.physical_width, m.physical_height));
             match m.sel {
                 0 => save.flight_sensitivity = (save.flight_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
                 1 => save.look_sensitivity = (save.look_sensitivity + step as f32 * 0.1).clamp(0.25, 1.5),
                 2 => save.ground_assist = (save.ground_assist + step as f32 * 0.1).clamp(0.0, 1.0),
                 3 => save.invert_pitch = !save.invert_pitch,
                 4 => save.speedometer = !save.speedometer,
-                5 => save.fullscreen = !save.fullscreen,
-                6 => {
-                    save.aspect_ratio = ((save.aspect_ratio as i32 + step).rem_euclid(crate::save::ASPECT_RATIO_LABELS.len() as i32)) as u8;
-                    let avail = crate::save::available_resolutions(save.aspect_ratio, mon);
-                    if !avail.iter().any(|(w, h, _)| *w == save.resolution_w && *h == save.resolution_h) {
-                        if let Some(best) = avail.iter().min_by_key(|(w, _, _)| (*w as i32 - save.resolution_w as i32).abs()) {
-                            save.resolution_w = best.0;
-                            save.resolution_h = best.1;
+                5 if crate::pwr::available() => save.plane_wii_style = !save.plane_wii_style,
+                _ if c.confirm => {
+                    m.page = Page::Graphics;
+                    m.sel = 0;
+                    m.pending_graphics = Some(PendingGraphics {
+                        fullscreen: save.fullscreen,
+                        aspect_ratio: save.aspect_ratio,
+                        resolution_w: save.resolution_w,
+                        resolution_h: save.resolution_h,
+                        msaa: save.msaa,
+                    });
+                }
+                _ => {}
+            }
+            save.store();
+        }
+        return;
+    }
+    if m.page == Page::Graphics {
+        let graphics_row = if crate::pwr::available() { 6 } else { 5 };
+        if c.back || c.pause {
+            m.page = Page::Settings;
+            m.sel = graphics_row;
+            m.pending_graphics = None;
+            return;
+        }
+        navigate(&mut m.sel, 5, &c);
+        let step = c.right as i32 - c.left as i32 + c.confirm as i32;
+        if step != 0 {
+            let mon = monitors.iter().find(|(_, is_prim)| *is_prim).or_else(|| monitors.iter().next()).map(|(m, _)| (m.physical_width, m.physical_height));
+            let mut pending = m.pending_graphics.unwrap_or(PendingGraphics {
+                fullscreen: save.fullscreen,
+                aspect_ratio: save.aspect_ratio,
+                resolution_w: save.resolution_w,
+                resolution_h: save.resolution_h,
+                msaa: save.msaa,
+            });
+            match m.sel {
+                0 => pending.fullscreen = !pending.fullscreen,
+                1 => {
+                    pending.aspect_ratio = ((pending.aspect_ratio as i32 + step).rem_euclid(crate::save::ASPECT_RATIO_LABELS.len() as i32)) as u8;
+                    let avail = crate::save::available_resolutions(pending.aspect_ratio, mon);
+                    if !avail.iter().any(|(w, h, _)| *w == pending.resolution_w && *h == pending.resolution_h) {
+                        if let Some(best) = avail.iter().min_by_key(|(w, _, _)| (*w as i32 - pending.resolution_w as i32).abs()) {
+                            pending.resolution_w = best.0;
+                            pending.resolution_h = best.1;
                         }
                     }
                 }
-                7 => {
-                    let avail = crate::save::available_resolutions(save.aspect_ratio, mon);
-                    let cur_idx = avail.iter().position(|(w, h, _)| *w == save.resolution_w && *h == save.resolution_h).unwrap_or(0);
+                2 => {
+                    let avail = crate::save::available_resolutions(pending.aspect_ratio, mon);
+                    let cur_idx = avail.iter().position(|(w, h, _)| *w == pending.resolution_w && *h == pending.resolution_h).unwrap_or(0);
                     let next_idx = (cur_idx as i32 + step).rem_euclid(avail.len() as i32) as usize;
-                    save.resolution_w = avail[next_idx].0;
-                    save.resolution_h = avail[next_idx].1;
+                    pending.resolution_w = avail[next_idx].0;
+                    pending.resolution_h = avail[next_idx].1;
                 }
-                8 => save.msaa = ((save.msaa as i32 + step).rem_euclid(crate::save::MSAA_LABELS.len() as i32)) as u8,
-                _ => save.plane_wii_style = !save.plane_wii_style,
+                3 => pending.msaa = ((pending.msaa as i32 + step).rem_euclid(crate::save::MSAA_LABELS.len() as i32)) as u8,
+                4 if c.confirm => {
+                    save.fullscreen = pending.fullscreen;
+                    save.aspect_ratio = pending.aspect_ratio;
+                    save.resolution_w = pending.resolution_w;
+                    save.resolution_h = pending.resolution_h;
+                    save.msaa = pending.msaa;
+                    save.store();
+                    m.page = Page::Settings;
+                    m.sel = graphics_row;
+                    m.pending_graphics = None;
+                    return;
+                }
+                _ => {}
             }
-            save.store();
+            m.pending_graphics = Some(pending);
         }
         return;
     }
@@ -315,8 +382,28 @@ fn render(
         }
         Page::Settings => {
             header.0.set_if_neq(Text::new(texts.ui(Ui::Settings))); help.set_if_neq(Text::new(texts.ui(Ui::MenuHint)));
+            let mut rows: Vec<(String, String)> = vec![
+                (texts.ui(Ui::FlightSensitivity).into(), choice(format!("{:.0}%", save.flight_sensitivity * 100.0))),
+                (texts.ui(Ui::LookSensitivity).into(), choice(format!("{:.0}%", save.look_sensitivity * 100.0))),
+                (texts.ui(Ui::GroundAssist).into(), choice(format!("{:.0}%", save.ground_assist * 100.0))),
+                (texts.ui(Ui::InvertPitch).into(), choice(onoff(save.invert_pitch))),
+                (texts.ui(Ui::Speedometer).into(), choice(onoff(save.speedometer))),
+            ];
+            if crate::pwr::available() { rows.push((texts.ui(Ui::PlaneHandling).into(), choice(texts.ui(if save.plane_wii_style { Ui::WiiStyle } else { Ui::Original })))); }
+            rows.push((texts.ui(Ui::Graphics).into(), "›".into()));
+            rows
+        }
+        Page::Graphics => {
+            header.0.set_if_neq(Text::new(texts.ui(Ui::Graphics))); help.set_if_neq(Text::new(texts.ui(Ui::GraphicsHint)));
+            let pending = m.pending_graphics.unwrap_or(PendingGraphics {
+                fullscreen: save.fullscreen,
+                aspect_ratio: save.aspect_ratio,
+                resolution_w: save.resolution_w,
+                resolution_h: save.resolution_h,
+                msaa: save.msaa,
+            });
             let mon = monitors.iter().find(|(_, is_prim)| *is_prim).or_else(|| monitors.iter().next()).map(|(m, _)| (m.physical_width, m.physical_height));
-            let aspect_label = match save.aspect_ratio {
+            let aspect_label = match pending.aspect_ratio {
                 0 => {
                     let detected = mon.map(|(w, h)| crate::save::detect_aspect_ratio(w, h)).unwrap_or("16:9");
                     format!("Auto ({detected})")
@@ -324,25 +411,19 @@ fn render(
                 5 => texts.ui(Ui::All).to_string(),
                 idx => crate::save::ASPECT_RATIO_LABELS[idx as usize].to_string(),
             };
-            let avail = crate::save::available_resolutions(save.aspect_ratio, mon);
-            let res_label = avail.iter().find(|(w, h, _)| *w == save.resolution_w && *h == save.resolution_h)
+            let avail = crate::save::available_resolutions(pending.aspect_ratio, mon);
+            let res_label = avail.iter().find(|(w, h, _)| *w == pending.resolution_w && *h == pending.resolution_h)
                 .map(|(_, _, label)| label.as_str())
                 .map(String::from)
-                .unwrap_or_else(|| format!("{} × {} (Custom)", save.resolution_w, save.resolution_h));
-            let msaa_idx = (save.msaa as usize).min(crate::save::MSAA_LABELS.len() - 1);
-            let mut rows: Vec<(String, String)> = vec![
-                (texts.ui(Ui::FlightSensitivity).into(), choice(format!("{:.0}%", save.flight_sensitivity * 100.0))),
-                (texts.ui(Ui::LookSensitivity).into(), choice(format!("{:.0}%", save.look_sensitivity * 100.0))),
-                (texts.ui(Ui::GroundAssist).into(), choice(format!("{:.0}%", save.ground_assist * 100.0))),
-                (texts.ui(Ui::InvertPitch).into(), choice(onoff(save.invert_pitch))),
-                (texts.ui(Ui::Speedometer).into(), choice(onoff(save.speedometer))),
-                (texts.ui(Ui::Fullscreen).into(), choice(onoff(save.fullscreen))),
+                .unwrap_or_else(|| format!("{} × {} (Custom)", pending.resolution_w, pending.resolution_h));
+            let msaa_idx = (pending.msaa as usize).min(crate::save::MSAA_LABELS.len() - 1);
+            vec![
+                (texts.ui(Ui::Fullscreen).into(), choice(onoff(pending.fullscreen))),
                 (texts.ui(Ui::AspectRatio).into(), choice(aspect_label)),
                 (texts.ui(Ui::Resolution).into(), choice(res_label)),
                 (texts.ui(Ui::AntiAliasing).into(), choice(crate::save::MSAA_LABELS[msaa_idx])),
-            ];
-            if crate::pwr::available() { rows.push((texts.ui(Ui::PlaneHandling).into(), choice(texts.ui(if save.plane_wii_style { Ui::WiiStyle } else { Ui::Original })))); }
-            rows
+                (texts.ui(Ui::Apply).into(), String::new()),
+            ]
         }
         Page::Record => {
             // Each point has a day, evening and night reading.
@@ -390,7 +471,7 @@ fn render(
     }
     let record = m.page == Page::Record;
     // The long pages (record, controls) use compact rows.
-    let pad = if record {px(2)} else if wide {px(3)} else if m.page == Page::Settings {px(5)} else {px(8)};
+    let pad = if record {px(2)} else if wide {px(3)} else if m.page == Page::Settings || m.page == Page::Graphics {px(6)} else {px(8)};
     for (item, hovered, mut node, mut bg, mut border, mut transform) in &mut items {
         let display = if item.0 < rows.len() {Display::Flex} else {Display::None};
         if node.display != display { node.display = display; }
@@ -501,11 +582,12 @@ mod tests {
         w.run_system_once(pause_input).unwrap();
         assert!(!w.resource::<Menu>().open && !w.resource::<Time<Virtual>>().is_paused());
     }
-    #[test] fn settings_navigation_cycles_resolution_and_msaa() {
+    #[test] fn settings_opens_graphics_and_applies_staged_changes() {
         let mut w = World::new();
         w.insert_resource(State::new(AppState::Play)); w.init_resource::<NextState<AppState>>();
-        w.insert_resource(Menu { open: true, page: Page::Settings, sel: 6, ..default() });
-        w.insert_resource(Controls { right: true, ..default() });
+        let graphics_row = if crate::pwr::available() { 6 } else { 5 };
+        w.insert_resource(Menu { open: true, page: Page::Settings, sel: graphics_row, ..default() });
+        w.insert_resource(Controls { confirm: true, ..default() });
         w.init_resource::<Time<Virtual>>(); w.insert_resource(TimeOfDay(0));
         let mut save = Save::default();
         save.aspect_ratio = 1;
@@ -517,18 +599,36 @@ mod tests {
         w.init_resource::<Messages<AppExit>>();
 
         w.run_system_once(pause_input).unwrap();
+        assert_eq!(w.resource::<Menu>().page, Page::Graphics);
+        assert!(w.resource::<Menu>().pending_graphics.is_some());
+
+        w.resource_mut::<Menu>().sel = 1;
+        w.insert_resource(Controls { right: true, ..default() });
+        w.run_system_once(pause_input).unwrap();
+        let pending = w.resource::<Menu>().pending_graphics.unwrap();
+        assert_eq!(pending.aspect_ratio, 2);
+        assert_eq!(w.resource::<Save>().aspect_ratio, 1);
+
+        w.resource_mut::<Menu>().sel = 2;
+        w.insert_resource(Controls { right: true, ..default() });
+        w.run_system_once(pause_input).unwrap();
+        let pending = w.resource::<Menu>().pending_graphics.unwrap();
+        assert_ne!((pending.resolution_w, pending.resolution_h), (1600, 900));
+        assert_eq!(w.resource::<Save>().resolution_w, 1600);
+
+        w.resource_mut::<Menu>().sel = 3;
+        w.insert_resource(Controls { right: true, ..default() });
+        w.run_system_once(pause_input).unwrap();
+        assert_eq!(w.resource::<Menu>().pending_graphics.unwrap().msaa, 1);
+        assert_eq!(w.resource::<Save>().msaa, 0);
+
+        w.resource_mut::<Menu>().sel = 4;
+        w.insert_resource(Controls { confirm: true, ..default() });
+        w.run_system_once(pause_input).unwrap();
+        assert_eq!(w.resource::<Menu>().page, Page::Settings);
+        assert!(w.resource::<Menu>().pending_graphics.is_none());
         assert_eq!(w.resource::<Save>().aspect_ratio, 2);
-
-        w.resource_mut::<Menu>().sel = 7;
-        let prev_res = (w.resource::<Save>().resolution_w, w.resource::<Save>().resolution_h);
-        w.insert_resource(Controls { right: true, ..default() });
-        w.run_system_once(pause_input).unwrap();
-        let new_res = (w.resource::<Save>().resolution_w, w.resource::<Save>().resolution_h);
-        assert_ne!(prev_res, new_res);
-
-        w.resource_mut::<Menu>().sel = 8;
-        w.insert_resource(Controls { right: true, ..default() });
-        w.run_system_once(pause_input).unwrap();
         assert_eq!(w.resource::<Save>().msaa, 1);
+        assert_ne!(w.resource::<Save>().resolution_w, 1600);
     }
 }

@@ -118,6 +118,7 @@ pub enum Ui {
     YellowGreen, Green, SkyBlue, Pink, Purple, Brown, Black,
     PlaneHandling, Original, WiiStyle,
     Resolution, AntiAliasing, AspectRatio, All,
+    Graphics, Apply, GraphicsHint,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -191,6 +192,9 @@ const UI: &[[&str; 5]] = &[
     ["Anti-aliasing", "Anticrénelage", "Kantenglättung", "Antialiasing", "Antialiasing"],
     ["Aspect ratio", "Format d'image", "Seitenverhältnis", "Relación de aspecto", "Rapporto d'aspetto"],
     ["All", "Tous", "Alle", "Todas", "Tutti"],
+    ["Graphics", "Graphismes", "Grafik", "Gráficos", "Grafica"],
+    ["Apply", "Appliquer", "Anwenden", "Aplicar", "Applica"],
+    ["Click to select · ‹ › to change · Apply to save", "Cliquez pour choisir · ‹ › modifier · Appliquer pour enregistrer", "Klicken: wählen · ‹ › ändern · Anwenden zum Speichern", "Clic para elegir · ‹ › cambiar · Aplicar para guardar", "Clic per scegliere · ‹ › cambia · Applica per salvare"],
 ];
 
 const ACTIONS: &[[&str; 5]] = &[
