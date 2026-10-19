@@ -167,10 +167,14 @@ fn mouse_input(mut m: ResMut<Menu>, mut c: ResMut<Controls>, mut clicks: Message
     }
     if wheel.delta.y != 0.0 { if wheel.delta.y > 0.0 { c.up = true; } else { c.down = true; } }
 }
-fn orbit_camera(time: Res<Time>, mut cam: Single<&mut Transform, With<MainCamera>>) {
+fn orbit_camera(time: Res<Time>, mut cam: Single<(&mut Transform, &mut Projection), With<MainCamera>>) {
+    let (ref mut cam_transform, ref mut cam_proj) = *cam;
     let a = time.elapsed_secs() * 0.04;
-    cam.translation = Vec3::new(a.sin() * 14000.0, 4500.0, a.cos() * 14000.0);
-    cam.look_at(Vec3::new(0.0, 600.0, 0.0), Vec3::Y);
+    cam_transform.translation = Vec3::new(a.sin() * 14000.0, 4500.0, a.cos() * 14000.0);
+    cam_transform.look_at(Vec3::new(0.0, 600.0, 0.0), Vec3::Y);
+    if let Projection::Perspective(ref mut proj) = **cam_proj {
+        proj.fov = 55f32.to_radians();
+    }
 }
 fn navigate(sel: &mut usize, n: usize, c: &Controls) { if c.down { *sel = (*sel + 1) % n; } if c.up { *sel = (*sel + n - 1) % n; } }
 fn record_scroll(scroll: usize, c: &Controls, total: usize) -> usize {

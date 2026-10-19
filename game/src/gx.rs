@@ -25,7 +25,22 @@ pub struct TevUniform {
     pub alpha_test: UVec4,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+pub struct GxMaterialKey {
+    pub depth_write: bool,
+}
+
+impl From<&GxMaterial> for GxMaterialKey {
+    fn from(material: &GxMaterial) -> GxMaterialKey {
+        GxMaterialKey {
+            depth_write: material.depth_write,
+        }
+    }
+}
+
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(GxMaterialKey)]
 pub struct GxMaterial {
     #[uniform(0)]
     pub tev: TevUniform,
@@ -56,6 +71,7 @@ pub struct GxMaterial {
     #[storage(17, read_only)]
     pub globals: Handle<ShaderBuffer>,
     pub alpha_mode: AlphaMode,
+    pub depth_write: bool,
     pub depth_bias: f32,
     /// Texture SRTs (scale x/y, rotation degrees, translation x/y) per texcoord, for animation.
     pub srt: [[f32; 5]; 8],
@@ -67,6 +83,19 @@ impl Material for GxMaterial {
     fn fragment_shader() -> ShaderRef { "embedded://sport_island/gx.wesl".into() }
     fn alpha_mode(&self) -> AlphaMode { self.alpha_mode }
     fn depth_bias(&self) -> f32 { self.depth_bias }
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if !key.bind_group_data.depth_write {
+            if let Some(ds) = descriptor.depth_stencil.as_mut() {
+                ds.depth_write_enabled = Some(false);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl GxMaterial {
@@ -104,7 +133,7 @@ pub fn shaded(color: Color, globals: Handle<ShaderBuffer>) -> GxMaterial {
     tev.stages[0] = UVec4::new(15 << 12 | 15 << 8 | 15 << 4 | 10 | 1 << 19, 7 << 13 | 7 << 10 | 7 << 7 | 5 << 4 | 1 << 19, 0, 0);
     tev.mat_color = Vec4::new(c.red, c.green, c.blue, 1.0);
     tev.alpha_test = UVec4::new(7 | 7 << 4, 0, 0, 0);
-    GxMaterial { tev, t0: None, t1: None, t2: None, t3: None, t4: None, t5: None, t6: None, t7: None, globals, alpha_mode: AlphaMode::Opaque, depth_bias: 0.0, srt: [[1.0, 1.0, 0.0, 0.0, 0.0]; 8], base: [Vec4::ONE; 11] }
+    GxMaterial { tev, t0: None, t1: None, t2: None, t3: None, t4: None, t5: None, t6: None, t7: None, globals, alpha_mode: AlphaMode::Opaque, depth_write: true, depth_bias: 0.0, srt: [[1.0, 1.0, 0.0, 0.0, 0.0]; 8], base: [Vec4::ONE; 11] }
 }
 
 /// A texture modulated by the lit, fogged material colour: what non-Wii
@@ -312,17 +341,19 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
     // Blending: PE CMODE0 (enable, dst factor bits 5-7, src factor bits 8-10).
     let cm = bp(0x41);
     let (blend, dst, src) = (cm & 1 != 0, (cm >> 5) & 7, (cm >> 8) & 7);
+    let zmode = bp(0x40);
+    let z_write = zmode & 16 != 0;
     // The original sky domes never wrote to depth (bp(0x40) bit 4 was 0).
-    // In Bevy, drawing them in the transparent pass with depth_bias ensures
-    // the sky dome is rendered first as background without writing depth,
-    // the sunset glow / moon halo blend smoothly over it without being clipped,
-    // and clouds render behind world transparent objects like balloons.
-    let (alpha_mode, depth_bias) = match def.name.as_str() {
-        "mt_sky2" | "mt_sky4" | "vr_star" => (AlphaMode::Blend, 150_000.0),
-        "mt_za_cloud2" | "vr_x_moon" => (AlphaMode::Blend, 120_000.0),
-        "mt_za_cloud" => (AlphaMode::Blend, 100_000.0),
+    // Keeping them opaque with depth_write disabled ensures they render first
+    // in Bevy's opaque pass as background without depth-clipping sunset glow or
+    // moon halo, and guarantees they never render in front of transparent world
+    // objects (balloons, fireworks, sun, moon).
+    let (alpha_mode, depth_write, depth_bias) = match def.name.as_str() {
+        "mt_sky2" | "mt_sky4" | "vr_star" => (AlphaMode::Opaque, false, 0.0),
+        "mt_za_cloud2" | "vr_x_moon" => (AlphaMode::Blend, false, 0.0),
+        "mt_za_cloud" => (AlphaMode::Blend, false, 0.0),
         _ => {
-            let mode = if !def.xlu && bp(0x40) & 16 != 0 {
+            let mode = if !def.xlu && z_write {
                 if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 { AlphaMode::Mask(0.0) } else { AlphaMode::Opaque }
             } else if blend && dst == 1 {
                 AlphaMode::Add
@@ -335,7 +366,7 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
             } else {
                 AlphaMode::Opaque
             };
-            (mode, 0.0)
+            (mode, z_write, 0.0)
         }
     };
     // Bit 0: fogged; bit 8: which of the scene's fogs (only indices 0 and 1 are defined).
@@ -354,7 +385,7 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
     }
     let [t0, t1, t2, t3, t4, t5, t6, t7] = tex;
     let base = [tev.mat_color, Vec4::ONE, tev.amb_color, Vec4::ONE, tev.regs[1], tev.regs[2], tev.regs[3], tev.konst[0], tev.konst[1], tev.konst[2], tev.konst[3]];
-    GxMaterial { tev, t0, t1, t2, t3, t4, t5, t6, t7, globals, alpha_mode, depth_bias, srt, base }
+    GxMaterial { tev, t0, t1, t2, t3, t4, t5, t6, t7, globals, alpha_mode, depth_write, depth_bias, srt, base }
 }
 
 /// Swap each glTF StandardMaterial for its GX equivalent as scenes spawn.

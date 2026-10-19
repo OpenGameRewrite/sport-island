@@ -693,7 +693,7 @@ fn camera(
     mut look: Local<Vec2>,
     mut heading: Local<Vec3>,
     q: Query<(&Vehicle, &Transform)>,
-    mut cam: Single<&mut Transform, (With<MainCamera>, Without<Vehicle>)>,
+    mut cam: Single<(&mut Transform, &mut Projection), (With<MainCamera>, Without<Vehicle>)>,
 ) {
     let Ok((v, t)) = q.single() else { return };
     let dt = time.delta_secs();
@@ -717,8 +717,16 @@ fn camera(
     let mut dist = chase * SCALE;
     if let Some(h) = col.raycast(target, dir, dist) { dist = (h.t - 10.0).max(20.0); }
     let want = target + dir * dist;
-    cam.translation = cam.translation.lerp(want, 1.0 - (-10.0 * dt).exp());
-    cam.look_at(target + fwd * 3.0 * SCALE, Vec3::Y);
+    let (ref mut cam_transform, ref mut cam_proj) = *cam;
+    let k = 1.0 - (-10.0 * dt).exp();
+    cam_transform.translation = cam_transform.translation.lerp(want, k);
+    cam_transform.look_at(target + fwd * 3.0 * SCALE, Vec3::Y);
+    if let Projection::Perspective(ref mut proj) = **cam_proj {
+        let base_fov = 55f32.to_radians();
+        if (proj.fov - base_fov).abs() > 1e-4 {
+            proj.fov = proj.fov.lerp(base_fov, k);
+        }
+    }
 }
 
 #[derive(Component)]

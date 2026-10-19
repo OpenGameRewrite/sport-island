@@ -127,7 +127,7 @@ impl Plane {
         let held = accel.abs() > 0.15;
         if held && !self.boost_held && self.boost_cooldown == 0 {
             self.boost_left = 25;
-            self.boost_cooldown = 50;
+            self.boost_cooldown = 180;
             self.boost_sign = accel.signum();
             if self.boost_sign > 0.0 {
                 self.boost_sound = true;
@@ -142,6 +142,10 @@ impl Plane {
             let burning = c.boost > 0.15 && self.turbo > 0.0;
             self.burning = burning;
             self.turbo = if burning { (self.turbo - 1.0 / 180.0).max(0.0) } else { (self.turbo + 1.0 / 360.0).min(1.0) };
+            if burning {
+                self.boost_sign = 1.0;
+                self.boost_force = (self.boost_force + 0.1).min(1.0);
+            }
             let slow = if self.boost_sign < 0.0 { self.boost_force * SLOW } else { 0.0 };
             force += z * (JET_THRUST * self.throttle + if burning { TURBO } else { 0.0 } + slow);
         } else {
@@ -503,7 +507,7 @@ fn fly(
     if p.boost_sound {
         p.boost_sound = false;
         if !p.jet {
-            sounds.write(crate::sound::Sound::effect("SE_PLN_TURBO_PLUS", None));
+            sounds.write(crate::sound::Sound::effect("SE_PLN_TWIST_START", None));
         }
     }
 
@@ -723,7 +727,7 @@ fn chase_camera(
     mut heading_ref: Local<Vec3>,
     mut cam_up: Local<Vec3>,
     plane: Single<(&Plane, &Transform)>,
-    mut cam: Single<&mut Transform, (With<MainCamera>, Without<Plane>)>,
+    mut cam: Single<(&mut Transform, &mut Projection), (With<MainCamera>, Without<Plane>)>,
 ) {
     let (p, root) = *plane;
     let t = p.pose(root, fixed.overstep_fraction());
@@ -754,11 +758,24 @@ fn chase_camera(
         dist = (h.t - 10.0).max(30.0);
     }
     let want = target + dir * dist;
+    let (ref mut cam_transform, ref mut cam_proj) = *cam;
     let k = 1.0 - (-12.0 * dt).exp();
-    cam.translation = cam.translation.lerp(want, k);
+    cam_transform.translation = cam_transform.translation.lerp(want, k);
     // Roll over smoothly when the heading does flip; aim stays exact.
     *cam_up = if *cam_up == Vec3::ZERO { up } else { cam_up.lerp(up, 1.0 - (-8.0 * dt).exp()).normalize_or(up) };
-    cam.look_at(target + fwd * 60.0, *cam_up);
+    cam_transform.look_at(target + fwd * 60.0, *cam_up);
+
+    // Wii Sports Resort camera zoom: acceleration expands FOV by up to 20% (50° -> 60°),
+    // deceleration/braking narrows FOV by up to 30% (50° -> 35°).
+    let fov_factor = if p.boost_sign >= 0.0 {
+        1.0 + 0.20 * p.boost_force
+    } else {
+        1.0 - 0.30 * p.boost_force
+    };
+    let target_fov = (55f32 * fov_factor).to_radians();
+    if let Projection::Perspective(ref mut proj) = **cam_proj {
+        proj.fov = proj.fov.lerp(target_fov, k);
+    }
 }
 
 /// Horizontal heading the chase camera follows. It keeps the previous heading
@@ -964,7 +981,7 @@ mod tests {
         let mut controls = Controls { boost: 1.0, ..default() };
         plane.step(&mut pose, &controls, false);
         assert!(plane.boost_sound, "boost must trigger sound flag");
-        assert_eq!(plane.boost_cooldown, 49);
+        assert_eq!(plane.boost_cooldown, 179);
         plane.boost_sound = false;
 
         // Release boost after 10 frames
@@ -975,9 +992,9 @@ mod tests {
         plane.step(&mut pose, &controls, false);
         assert!(!plane.boost_sound, "re-press within cooldown must not retrigger sound");
 
-        // Let remaining cooldown expire
+        // Let remaining cooldown expire (180 - 1 - 10 - 1 = 168 frames)
         controls.boost = 0.0;
-        for _ in 0..40 { plane.step(&mut pose, &controls, false); }
+        for _ in 0..168 { plane.step(&mut pose, &controls, false); }
         assert_eq!(plane.boost_cooldown, 0);
 
         // Fresh press after cooldown
@@ -997,5 +1014,25 @@ mod tests {
             let height = (pose.rotation * Vec3::Z).y;
             assert!(if invert { height > 0.1 } else { height < -0.1 });
         }
+    }
+
+    #[test]
+    fn acceleration_zoom_expands_fov_on_boost_and_contracts_on_slow() {
+        let mut pose = Transform::IDENTITY;
+        let mut plane = Plane::new(pose, 7.0);
+        let controls = Controls { boost: 1.0, ..default() };
+        plane.step(&mut pose, &controls, false);
+        assert!(plane.boost_force > 0.0);
+        assert_eq!(plane.boost_sign, 1.0);
+        let boost_factor = 1.0 + 0.20 * plane.boost_force;
+        assert!(boost_factor > 1.0 && boost_factor <= 1.20);
+
+        let mut brake_plane = Plane::new(pose, 7.0);
+        let brake_controls = Controls { slow: 1.0, ..default() };
+        brake_plane.step(&mut pose, &brake_controls, false);
+        assert!(brake_plane.boost_force > 0.0);
+        assert_eq!(brake_plane.boost_sign, -1.0);
+        let slow_factor = 1.0 - 0.30 * brake_plane.boost_force;
+        assert!(slow_factor < 1.0 && slow_factor >= 0.70);
     }
 }
