@@ -106,6 +106,7 @@ fn smoke(
     mut c: ResMut<crate::input::Controls>, mut phase: Local<u8>, mut paused_at: Local<Option<Vec3>>, mut boarded_at: Local<f32>,
     plane: Query<&Transform, With<crate::plane::Flying>>, menu: Res<crate::menu::Menu>,
     markers: Query<&crate::ipoint::Marker>,
+    points: Res<crate::ipoint::IPoints>,
     names: Query<&Name>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -114,7 +115,7 @@ fn smoke(
     match *phase {
         0 if now > 2.0 => { *phase = 1; }
         1 if now > 3.0 => { c.confirm = true; *phase = 2; }
-        2 if *state.get() == crate::AppState::Play && now > 5.0 => { assert_eq!(markers.iter().count(), 80, "all 80 sightseeing points must spawn"); c.board = true; *boarded_at = now; *phase = 3; }
+        2 if *state.get() == crate::AppState::Play && now > 5.0 => { assert_eq!(markers.iter().count(), points.0.len(), "all sightseeing points must spawn"); c.board = true; *boarded_at = now; *phase = 3; }
         3 if *mode.get() == crate::Mode::Fly => {
             // Pull back briefly to take off from water through normal input.
             if now < *boarded_at + 2.0 { c.stick.y = -0.4; }

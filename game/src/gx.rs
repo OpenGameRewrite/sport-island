@@ -89,10 +89,10 @@ impl Material for GxMaterial {
         _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
         key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
-        if !key.bind_group_data.depth_write {
-            if let Some(ds) = descriptor.depth_stencil.as_mut() {
-                ds.depth_write_enabled = Some(false);
-            }
+        if !key.bind_group_data.depth_write
+            && let Some(ds) = descriptor.depth_stencil.as_mut()
+        {
+            ds.depth_write_enabled = Some(false);
         }
         Ok(())
     }

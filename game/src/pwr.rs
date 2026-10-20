@@ -229,8 +229,8 @@ fn follow_path(time: Res<Time>, mut q: Query<(&mut PathFollower, &mut Transform)
         t.translation = a.lerp(b, d / lengths[i].max(1e-3));
         let dir = (b - a).with_y(0.0).normalize_or_zero();
         if dir != Vec3::ZERO {
-            // The blimp model's nose faces +Z in local coordinates, so `looking_to(dir)`
-            // points the nose forward along the flight path tangent (fixing backward flight).
+            // The blimp model's nose faces -Z in local coordinates (with propellers at +Z),
+            // so `looking_to(dir)` aligns the -Z nose forward along the flight path tangent.
             let target = Transform::IDENTITY.looking_to(dir, Vec3::Y).rotation;
             t.rotation = t.rotation.slerp(target, (time.delta_secs() * 0.8).min(1.0));
         }
@@ -300,7 +300,7 @@ fn convert_materials(
             // it out instead so the columns stay see-through.
             if name.is_some_and(|n| n.0 == "mat_thin.mat") { mat.tev.mat_color.w = 0.25; }
             // Pilotwings Resort Jet cockpit canopy is dark tinted translucent glass.
-            if name.is_some_and(|n| n.0 == "\x04" || n.0.contains("cockpit") || n.0.contains("glass")) {
+            if name.is_some_and(|n| n.0 == "\x04") {
                 mat.alpha_mode = AlphaMode::Blend;
                 mat.tev.mat_color = Vec4::new(0.08, 0.08, 0.10, 0.65);
             }
@@ -308,14 +308,14 @@ fn convert_materials(
             // `a_lt_20zns` stores one quadrant centered at (1, 1). MirrorRepeat and a +1 V shift
             // tile and mirror all four quadrants consistently across all 5 landing targets.
             if name.is_some_and(|n| n.0.contains("a_lt_20zns")) {
-                if let Some(tex) = &m.base_color_texture {
-                    if let Some(mut img) = images.get_mut(tex) {
-                        img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                            address_mode_u: ImageAddressMode::MirrorRepeat,
-                            address_mode_v: ImageAddressMode::MirrorRepeat,
-                            ..ImageSamplerDescriptor::linear()
-                        });
-                    }
+                if let Some(tex) = &m.base_color_texture
+                    && let Some(mut img) = images.get_mut(tex)
+                {
+                    img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                        address_mode_u: ImageAddressMode::MirrorRepeat,
+                        address_mode_v: ImageAddressMode::MirrorRepeat,
+                        ..ImageSamplerDescriptor::linear()
+                    });
                 }
                 mat.set_srt(0, [1.0, 1.0, 0.0, 0.0, 1.0]);
             }

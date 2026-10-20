@@ -73,17 +73,21 @@ pub fn plugin(app: &mut App) {
 fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWindow>>, mut applied: Local<Option<(u32, u32, bool)>>) {
     use bevy::window::{MonitorSelection, WindowMode};
     let target = (save.resolution_w, save.resolution_h, save.fullscreen);
-    if applied.as_ref() == Some(&target) { return; }
-    let is_first = applied.is_none();
-    *applied = Some(target);
     let mode = if save.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
     if window.mode != mode { window.mode = mode; }
-    if !is_first && !save.fullscreen {
+    if !save.fullscreen {
         let cur_w = window.resolution.physical_width();
         let cur_h = window.resolution.physical_height();
         if cur_w != save.resolution_w || cur_h != save.resolution_h {
-            window.resolution.set_physical_resolution(save.resolution_w, save.resolution_h);
+            if applied.as_ref() != Some(&target) {
+                window.resolution.set_physical_resolution(save.resolution_w, save.resolution_h);
+                *applied = Some(target);
+            }
+        } else {
+            *applied = Some(target);
         }
+    } else {
+        *applied = Some(target);
     }
 }
 pub fn preview_controls(mut m: ResMut<Menu>) {
@@ -261,16 +265,16 @@ pub fn pause_input(
                 1 => {
                     pending.aspect_ratio = ((pending.aspect_ratio as i32 + step).rem_euclid(crate::save::ASPECT_RATIO_LABELS.len() as i32)) as u8;
                     let avail = crate::save::available_resolutions(pending.aspect_ratio, mon);
-                    if !avail.iter().any(|(w, h, _)| *w == pending.resolution_w && *h == pending.resolution_h) {
-                        if let Some(best) = avail.iter().min_by_key(|(w, _, _)| (*w as i32 - pending.resolution_w as i32).abs()) {
-                            pending.resolution_w = best.0;
-                            pending.resolution_h = best.1;
-                        }
+                    if !avail.iter().any(|(w, h, _, _)| *w == pending.resolution_w && *h == pending.resolution_h)
+                        && let Some(best) = avail.iter().min_by_key(|(w, _, _, _)| (*w as i32 - pending.resolution_w as i32).abs())
+                    {
+                        pending.resolution_w = best.0;
+                        pending.resolution_h = best.1;
                     }
                 }
                 2 => {
                     let avail = crate::save::available_resolutions(pending.aspect_ratio, mon);
-                    let cur_idx = avail.iter().position(|(w, h, _)| *w == pending.resolution_w && *h == pending.resolution_h).unwrap_or(0);
+                    let cur_idx = avail.iter().position(|(w, h, _, _)| *w == pending.resolution_w && *h == pending.resolution_h).unwrap_or(0);
                     let next_idx = (cur_idx as i32 + step).rem_euclid(avail.len() as i32) as usize;
                     pending.resolution_w = avail[next_idx].0;
                     pending.resolution_h = avail[next_idx].1;
@@ -408,18 +412,26 @@ fn render(
             let aspect_label = match pending.aspect_ratio {
                 0 => {
                     let detected = mon.map(|(w, h)| crate::save::detect_aspect_ratio(w, h)).unwrap_or("16:9");
-                    format!("Auto ({detected})")
+                    format!("{} ({detected})", texts.ui(Ui::Auto))
                 }
                 5 => texts.ui(Ui::All).to_string(),
                 idx => crate::save::ASPECT_RATIO_LABELS[idx as usize].to_string(),
             };
             let avail = crate::save::available_resolutions(pending.aspect_ratio, mon);
-            let res_label = avail.iter().find(|(w, h, _)| *w == pending.resolution_w && *h == pending.resolution_h)
-                .map(|(_, _, label)| label.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| format!("{} × {} (Custom)", pending.resolution_w, pending.resolution_h));
+            let show_aspect = pending.aspect_ratio == 5;
+            let res_label = avail.iter().find(|(w, h, _, _)| *w == pending.resolution_w && *h == pending.resolution_h)
+                .map(|(w, h, is_native, aspect)| {
+                    if *is_native {
+                        format!("{w} × {h} ({})", texts.ui(Ui::Native))
+                    } else if show_aspect {
+                        format!("{w} × {h} ({aspect})")
+                    } else {
+                        format!("{w} × {h}")
+                    }
+                })
+                .unwrap_or_else(|| format!("{} × {} ({})", pending.resolution_w, pending.resolution_h, texts.ui(Ui::Custom)));
             let res_val = if pending.fullscreen {
-                format!("{res_label} (Windowed)")
+                format!("{res_label} ({})", texts.ui(Ui::Windowed))
             } else {
                 res_label
             };
@@ -645,18 +657,21 @@ mod tests {
         save.resolution_w = 1280;
         save.resolution_h = 720;
         w.insert_resource(save);
-        let win = Window { resolution: (1024u32, 600u32).into(), ..default() };
+        // On DPI > 1 (e.g. 1.5), Winit inflates physical resolution from initial logical (1280, 720) to 1920x1080
+        let mut win = Window { resolution: (1280u32, 720u32).into(), ..default() };
+        win.resolution.set_physical_resolution(1920, 1080);
         let win_entity = w.spawn((win, PrimaryWindow)).id();
         let sys = w.register_system(window_mode);
+        // First run corrects inflated physical resolution to the save's requested physical resolution
         w.run_system(sys).unwrap();
         let cur = w.get::<Window>(win_entity).unwrap().resolution.clone();
-        assert_eq!((cur.physical_width(), cur.physical_height()), (1024, 600));
+        assert_eq!((cur.physical_width(), cur.physical_height()), (1280, 720));
 
         // Changing language triggers save change, but must NOT change resolution
         w.resource_mut::<Save>().lang = Some("ES".into());
         w.run_system(sys).unwrap();
         let cur = w.get::<Window>(win_entity).unwrap().resolution.clone();
-        assert_eq!((cur.physical_width(), cur.physical_height()), (1024, 600));
+        assert_eq!((cur.physical_width(), cur.physical_height()), (1280, 720));
 
         // When resolution actually changes, window_mode updates resolution
         w.resource_mut::<Save>().resolution_w = 1600;

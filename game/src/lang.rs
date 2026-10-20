@@ -119,6 +119,7 @@ pub enum Ui {
     PlaneHandling, Original, WiiStyle,
     Resolution, AntiAliasing, AspectRatio, All,
     Graphics, Apply, GraphicsHint,
+    Windowed, Native, Custom, Auto,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -195,6 +196,10 @@ const UI: &[[&str; 5]] = &[
     ["Graphics", "Graphismes", "Grafik", "Gráficos", "Grafica"],
     ["Apply", "Appliquer", "Anwenden", "Aplicar", "Applica"],
     ["Click to select · ‹ › to change · Apply to save", "Cliquez pour choisir · ‹ › modifier · Appliquer pour enregistrer", "Klicken: wählen · ‹ › ändern · Anwenden zum Speichern", "Clic para elegir · ‹ › cambiar · Aplicar para guardar", "Clic per scegliere · ‹ › cambia · Applica per salvare"],
+    ["Windowed", "Fenêtré", "Fenstermodus", "Ventana", "Finestra"],
+    ["Native", "Native", "Nativ", "Nativa", "Nativa"],
+    ["Custom", "Personnalisée", "Benutzerdefiniert", "Personalizada", "Personalizzata"],
+    ["Auto", "Auto", "Auto", "Automático", "Automatico"],
 ];
 
 const ACTIONS: &[[&str; 5]] = &[

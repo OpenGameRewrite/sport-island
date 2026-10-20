@@ -46,9 +46,10 @@ On a gamepad the time of day, i-point list and speedometer are unbound by
 default so they never clash with flying; **Controls** can give them buttons.
 
 Pull back on the stick (S) to take off from the water. Boost and slowing are
-temporary impulses: after a boost completes, a brief cooldown applies before the
-next impulse can be triggered. The optional speedometer shows game units per
-second and the remaining impulse. Free look
+temporary impulses: after a boost completes, a cooldown (~3 s / 180 ticks)
+applies before the next impulse can be triggered, approximating the physical delay
+of shaking the Wii Remote and preventing overlapping boost audio. The optional
+speedometer shows game units per second and the remaining impulse. Free look
 holds briefly before returning to the flight camera. Hold ↑/↓ or use the wheel
 to browse i-points; ←/→ changes pages. The paused ⓘ counter also opens the list.
 Each point has a reading for each time of day. Progress saves automatically
