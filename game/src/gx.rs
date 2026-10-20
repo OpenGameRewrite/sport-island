@@ -348,10 +348,15 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
     // in Bevy's opaque pass as background without depth-clipping sunset glow or
     // moon halo, and guarantees they never render in front of transparent world
     // objects (balloons, fireworks, sun, moon).
+    // In Bevy's Transparent3d pass, negative depth_bias sorts the sky clouds,
+    // sunset glow, and moon halo behind all world transparent objects (balloons,
+    // fireworks, water, vehicles) while keeping their proper relative ordering:
+    // sunset glow (-150k) -> moon halo (-140k) -> clouds (-130k) -> world (> -20k).
     let (alpha_mode, depth_write, depth_bias) = match def.name.as_str() {
         "mt_sky2" | "mt_sky4" | "vr_star" => (AlphaMode::Opaque, false, 0.0),
-        "mt_za_cloud2" | "vr_x_moon" => (AlphaMode::Blend, false, 0.0),
-        "mt_za_cloud" => (AlphaMode::Blend, false, 0.0),
+        "mt_za_cloud2" => (AlphaMode::Blend, false, -150_000.0),
+        "vr_x_moon" => (AlphaMode::Blend, false, -140_000.0),
+        "mt_za_cloud" => (AlphaMode::Blend, false, -130_000.0),
         _ => {
             let mode = if !def.xlu && z_write {
                 if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 { AlphaMode::Mask(0.0) } else { AlphaMode::Opaque }
@@ -493,5 +498,56 @@ mod tests {
         let fw = tex_mtx([2.0, 2.0, 0.0, -0.25, 0.25]);
         assert!(apply(fw, Vec2::splat(0.5)).abs_diff_eq(Vec2::ONE, 1e-6));
         assert!(apply(fw, Vec2::ZERO).abs_diff_eq(Vec2::ZERO, 1e-6));
+    }
+
+    #[test]
+    fn sky_and_cloud_material_depth_sorting() {
+        let make_def = |name: &str| -> GxDef {
+            serde_json::from_value(serde_json::json!({
+                "name": name,
+                "xlu": false,
+                "stages": 1,
+                "fog": 0,
+                "chan": [[0, [0, 0, 0, 0], [0, 0, 0, 0]]],
+                "maps": [],
+                "texmtx": [],
+                "texgen": [0, 0, 0, 0, 0, 0, 0, 0],
+                "bp": { "40": 7, "41": 13473 },
+                "regs": [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+                "konst": [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+            })).unwrap()
+        };
+
+        let mut app = App::new();
+        app.add_plugins(bevy::app::TaskPoolPlugin::default())
+            .add_plugins(bevy::asset::AssetPlugin::default())
+            .init_asset::<ShaderBuffer>();
+        let globals = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![[0f32; 4]; 11]));
+        let assets = app.world().resource::<AssetServer>().clone();
+
+        let sky = decode(&make_def("mt_sky2"), "models/island.glb", &assets, globals.clone());
+        assert_eq!(sky.alpha_mode, AlphaMode::Opaque);
+        assert!(!sky.depth_write);
+        assert_eq!(sky.depth_bias, 0.0);
+
+        let sunset = decode(&make_def("mt_za_cloud2"), "models/island.glb", &assets, globals.clone());
+        assert_eq!(sunset.alpha_mode, AlphaMode::Blend);
+        assert!(!sunset.depth_write);
+        assert_eq!(sunset.depth_bias, -150_000.0);
+
+        let moon = decode(&make_def("vr_x_moon"), "models/island.glb", &assets, globals.clone());
+        assert_eq!(moon.alpha_mode, AlphaMode::Blend);
+        assert!(!moon.depth_write);
+        assert_eq!(moon.depth_bias, -140_000.0);
+
+        let clouds = decode(&make_def("mt_za_cloud"), "models/island.glb", &assets, globals);
+        assert_eq!(clouds.alpha_mode, AlphaMode::Blend);
+        assert!(!clouds.depth_write);
+        assert_eq!(clouds.depth_bias, -130_000.0);
+
+        // Relative ordering: sunset glow rendered before moon/clouds, clouds before world objects
+        assert!(sunset.depth_bias < moon.depth_bias);
+        assert!(moon.depth_bias < clouds.depth_bias);
+        assert!(clouds.depth_bias < 0.0);
     }
 }
