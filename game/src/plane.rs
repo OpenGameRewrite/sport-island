@@ -765,14 +765,14 @@ fn chase_camera(
     *cam_up = if *cam_up == Vec3::ZERO { up } else { cam_up.lerp(up, 1.0 - (-8.0 * dt).exp()).normalize_or(up) };
     cam_transform.look_at(target + fwd * 60.0, *cam_up);
 
-    // Wii Sports Resort camera zoom: acceleration expands FOV by up to 20% (50° -> 60°),
-    // deceleration/braking narrows FOV by up to 30% (50° -> 35°).
+    // Wii Sports Resort camera zoom: acceleration expands FOV by up to 20% (~66°),
+    // deceleration/braking narrows FOV by up to 30% (~38.5°) from base 55°.
     let fov_factor = if p.boost_sign >= 0.0 {
         1.0 + 0.20 * p.boost_force
     } else {
         1.0 - 0.30 * p.boost_force
     };
-    let target_fov = (55f32 * fov_factor).to_radians();
+    let target_fov = (crate::world::BASE_FOV_DEGREES * fov_factor).to_radians();
     if let Projection::Perspective(ref mut proj) = **cam_proj {
         proj.fov = proj.fov.lerp(target_fov, k);
     }
@@ -1018,21 +1018,42 @@ mod tests {
 
     #[test]
     fn acceleration_zoom_expands_fov_on_boost_and_contracts_on_slow() {
-        let mut pose = Transform::IDENTITY;
-        let mut plane = Plane::new(pose, 7.0);
-        let controls = Controls { boost: 1.0, ..default() };
-        plane.step(&mut pose, &controls, false);
-        assert!(plane.boost_force > 0.0);
-        assert_eq!(plane.boost_sign, 1.0);
-        let boost_factor = 1.0 + 0.20 * plane.boost_force;
-        assert!(boost_factor > 1.0 && boost_factor <= 1.20);
+        use bevy::ecs::system::RunSystemOnce;
+        let base_fov = crate::world::BASE_FOV_DEGREES.to_radians();
 
-        let mut brake_plane = Plane::new(pose, 7.0);
-        let brake_controls = Controls { slow: 1.0, ..default() };
-        brake_plane.step(&mut pose, &brake_controls, false);
-        assert!(brake_plane.boost_force > 0.0);
-        assert_eq!(brake_plane.boost_sign, -1.0);
-        let slow_factor = 1.0 - 0.30 * brake_plane.boost_force;
-        assert!(slow_factor < 1.0 && slow_factor >= 0.70);
+        let mut w = World::new();
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_millis(16));
+        w.insert_resource(time);
+        w.insert_resource(Time::<Fixed>::from_hz(60.0));
+        w.insert_resource(crate::collide::Collision::default());
+        w.insert_resource(Controls::default());
+
+        let pose = Transform::from_xyz(0.0, 100.0, 0.0);
+        let mut plane = Plane::new(pose, 7.0);
+        plane.boost_force = 1.0;
+        plane.boost_sign = 1.0;
+        let plane_e = w.spawn((pose, plane, Flying)).id();
+        let cam_e = w.spawn((
+            Transform::from_xyz(0.0, 100.0, 100.0),
+            Projection::Perspective(PerspectiveProjection { fov: base_fov, ..default() }),
+            crate::world::MainCamera,
+        )).id();
+
+        for _ in 0..10 {
+            w.run_system_once(chase_camera).unwrap();
+        }
+        let Projection::Perspective(proj) = w.get::<Projection>(cam_e).unwrap() else { panic!() };
+        assert!(proj.fov > base_fov, "boost should expand FOV beyond base (got {}, base {})", proj.fov, base_fov);
+
+        // Now test braking contracts FOV below base
+        let mut p = w.get_mut::<Plane>(plane_e).unwrap();
+        p.boost_force = 1.0;
+        p.boost_sign = -1.0;
+        for _ in 0..25 {
+            w.run_system_once(chase_camera).unwrap();
+        }
+        let Projection::Perspective(proj) = w.get::<Projection>(cam_e).unwrap() else { panic!() };
+        assert!(proj.fov < base_fov, "braking should contract FOV below base (got {}, base {})", proj.fov, base_fov);
     }
 }

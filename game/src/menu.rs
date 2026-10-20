@@ -20,6 +20,18 @@ pub struct PendingGraphics {
     pub msaa: u8,
 }
 
+impl PendingGraphics {
+    pub fn from_save(save: &Save) -> Self {
+        Self {
+            fullscreen: save.fullscreen,
+            aspect_ratio: save.aspect_ratio,
+            resolution_w: save.resolution_w,
+            resolution_h: save.resolution_h,
+            msaa: save.msaa,
+        }
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct Menu {
     pub open: bool,
@@ -67,10 +79,10 @@ fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWind
     let mode = if save.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
     if window.mode != mode { window.mode = mode; }
     if !is_first && !save.fullscreen {
-        let cur_w = window.resolution.width() as u32;
-        let cur_h = window.resolution.height() as u32;
+        let cur_w = window.resolution.physical_width();
+        let cur_h = window.resolution.physical_height();
         if cur_w != save.resolution_w || cur_h != save.resolution_h {
-            window.resolution.set(save.resolution_w as f32, save.resolution_h as f32);
+            window.resolution.set_physical_resolution(save.resolution_w, save.resolution_h);
         }
     }
 }
@@ -173,7 +185,7 @@ fn orbit_camera(time: Res<Time>, mut cam: Single<(&mut Transform, &mut Projectio
     cam_transform.translation = Vec3::new(a.sin() * 14000.0, 4500.0, a.cos() * 14000.0);
     cam_transform.look_at(Vec3::new(0.0, 600.0, 0.0), Vec3::Y);
     if let Projection::Perspective(ref mut proj) = **cam_proj {
-        proj.fov = 55f32.to_radians();
+        proj.fov = crate::world::BASE_FOV_DEGREES.to_radians();
     }
 }
 fn navigate(sel: &mut usize, n: usize, c: &Controls) { if c.down { *sel = (*sel + 1) % n; } if c.up { *sel = (*sel + n - 1) % n; } }
@@ -223,13 +235,7 @@ pub fn pause_input(
                 _ if c.confirm => {
                     m.page = Page::Graphics;
                     m.sel = 0;
-                    m.pending_graphics = Some(PendingGraphics {
-                        fullscreen: save.fullscreen,
-                        aspect_ratio: save.aspect_ratio,
-                        resolution_w: save.resolution_w,
-                        resolution_h: save.resolution_h,
-                        msaa: save.msaa,
-                    });
+                    m.pending_graphics = Some(PendingGraphics::from_save(&save));
                 }
                 _ => {}
             }
@@ -249,13 +255,7 @@ pub fn pause_input(
         let step = c.right as i32 - c.left as i32 + c.confirm as i32;
         if step != 0 {
             let mon = monitors.iter().find(|(_, is_prim)| *is_prim).or_else(|| monitors.iter().next()).map(|(m, _)| (m.physical_width, m.physical_height));
-            let mut pending = m.pending_graphics.unwrap_or(PendingGraphics {
-                fullscreen: save.fullscreen,
-                aspect_ratio: save.aspect_ratio,
-                resolution_w: save.resolution_w,
-                resolution_h: save.resolution_h,
-                msaa: save.msaa,
-            });
+            let mut pending = m.pending_graphics.unwrap_or_else(|| PendingGraphics::from_save(&save));
             match m.sel {
                 0 => pending.fullscreen = !pending.fullscreen,
                 1 => {
@@ -403,13 +403,7 @@ fn render(
         }
         Page::Graphics => {
             header.0.set_if_neq(Text::new(texts.ui(Ui::Graphics))); help.set_if_neq(Text::new(texts.ui(Ui::GraphicsHint)));
-            let pending = m.pending_graphics.unwrap_or(PendingGraphics {
-                fullscreen: save.fullscreen,
-                aspect_ratio: save.aspect_ratio,
-                resolution_w: save.resolution_w,
-                resolution_h: save.resolution_h,
-                msaa: save.msaa,
-            });
+            let pending = m.pending_graphics.unwrap_or_else(|| PendingGraphics::from_save(&save));
             let mon = monitors.iter().find(|(_, is_prim)| *is_prim).or_else(|| monitors.iter().next()).map(|(m, _)| (m.physical_width, m.physical_height));
             let aspect_label = match pending.aspect_ratio {
                 0 => {
@@ -424,11 +418,16 @@ fn render(
                 .map(|(_, _, label)| label.as_str())
                 .map(String::from)
                 .unwrap_or_else(|| format!("{} × {} (Custom)", pending.resolution_w, pending.resolution_h));
+            let res_val = if pending.fullscreen {
+                format!("{res_label} (Windowed)")
+            } else {
+                res_label
+            };
             let msaa_idx = (pending.msaa as usize).min(crate::save::MSAA_LABELS.len() - 1);
             vec![
                 (texts.ui(Ui::Fullscreen).into(), choice(onoff(pending.fullscreen))),
                 (texts.ui(Ui::AspectRatio).into(), choice(aspect_label)),
-                (texts.ui(Ui::Resolution).into(), choice(res_label)),
+                (texts.ui(Ui::Resolution).into(), choice(res_val)),
                 (texts.ui(Ui::AntiAliasing).into(), choice(crate::save::MSAA_LABELS[msaa_idx])),
                 (texts.ui(Ui::Apply).into(), String::new()),
             ]
@@ -651,19 +650,19 @@ mod tests {
         let sys = w.register_system(window_mode);
         w.run_system(sys).unwrap();
         let cur = w.get::<Window>(win_entity).unwrap().resolution.clone();
-        assert_eq!((cur.width() as u32, cur.height() as u32), (1024, 600));
+        assert_eq!((cur.physical_width(), cur.physical_height()), (1024, 600));
 
         // Changing language triggers save change, but must NOT change resolution
         w.resource_mut::<Save>().lang = Some("ES".into());
         w.run_system(sys).unwrap();
         let cur = w.get::<Window>(win_entity).unwrap().resolution.clone();
-        assert_eq!((cur.width() as u32, cur.height() as u32), (1024, 600));
+        assert_eq!((cur.physical_width(), cur.physical_height()), (1024, 600));
 
         // When resolution actually changes, window_mode updates resolution
         w.resource_mut::<Save>().resolution_w = 1600;
         w.resource_mut::<Save>().resolution_h = 900;
         w.run_system(sys).unwrap();
         let cur = w.get::<Window>(win_entity).unwrap().resolution.clone();
-        assert_eq!((cur.width() as u32, cur.height() as u32), (1600, 900));
+        assert_eq!((cur.physical_width(), cur.physical_height()), (1600, 900));
     }
 }

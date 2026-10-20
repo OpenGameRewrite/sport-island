@@ -87,6 +87,7 @@ fn main() {
                     focused: false, ..default() }), ..default() }),
         )
         .insert_resource(Time::<Fixed>::from_hz(60.0))
+        .insert_resource(initial_save)
         .init_state::<AppState>()
         .init_state::<Mode>()
         .add_plugins((save::plugin, lang::plugin, input::plugin, collide::plugin, gx::plugin, particles::plugin, world::plugin))

@@ -229,6 +229,8 @@ fn follow_path(time: Res<Time>, mut q: Query<(&mut PathFollower, &mut Transform)
         t.translation = a.lerp(b, d / lengths[i].max(1e-3));
         let dir = (b - a).with_y(0.0).normalize_or_zero();
         if dir != Vec3::ZERO {
+            // The blimp model's nose faces +Z in local coordinates, so `looking_to(dir)`
+            // points the nose forward along the flight path tangent (fixing backward flight).
             let target = Transform::IDENTITY.looking_to(dir, Vec3::Y).rotation;
             t.rotation = t.rotation.slerp(target, (time.delta_secs() * 0.8).min(1.0));
         }
@@ -297,10 +299,14 @@ fn convert_materials(
             // and fades it up close, which the extraction does not keep; thin
             // it out instead so the columns stay see-through.
             if name.is_some_and(|n| n.0 == "mat_thin.mat") { mat.tev.mat_color.w = 0.25; }
-            // Pilotwings Resort Jet cockpit glass is dark/black tinted glass.
-            if name.is_some_and(|n| n.0 == "\x04" || n.0 == "\u{4}") { mat.tev.mat_color = Vec4::new(0.05, 0.05, 0.05, 1.0); }
-            // Glider landing pad bullseye target: the 3DS texture stores one quadrant
-            // centered at (1, 1). MirrorRepeat and a +1 V shift tile all four quadrants.
+            // Pilotwings Resort Jet cockpit canopy is dark tinted translucent glass.
+            if name.is_some_and(|n| n.0 == "\x04" || n.0.contains("cockpit") || n.0.contains("glass")) {
+                mat.alpha_mode = AlphaMode::Blend;
+                mat.tev.mat_color = Vec4::new(0.08, 0.08, 0.10, 0.65);
+            }
+            // Landing pad bullseye targets (glider and rocket platforms): the 3DS texture
+            // `a_lt_20zns` stores one quadrant centered at (1, 1). MirrorRepeat and a +1 V shift
+            // tile and mirror all four quadrants consistently across all 5 landing targets.
             if name.is_some_and(|n| n.0.contains("a_lt_20zns")) {
                 if let Some(tex) = &m.base_color_texture {
                     if let Some(mut img) = images.get_mut(tex) {

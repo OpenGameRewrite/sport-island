@@ -162,7 +162,7 @@ fn camera(
     cam_transform.translation = cam_transform.translation.lerp(want, k);
     cam_transform.look_at(target, Vec3::Y);
     if let Projection::Perspective(ref mut proj) = **cam_proj {
-        let base_fov = 55f32.to_radians();
+        let base_fov = crate::world::BASE_FOV_DEGREES.to_radians();
         if (proj.fov - base_fov).abs() > 1e-4 {
             proj.fov = proj.fov.lerp(base_fov, k);
         }

@@ -146,9 +146,6 @@ pub struct Save {
     pub resolution_h: u32,
     /// Index into `MSAA_LABELS` (0 = Off, 1 = 2x, 2 = 4x).
     pub msaa: u8,
-    /// Legacy index field for compatibility with earlier saves.
-    #[serde(default)]
-    pub resolution: Option<u8>,
     /// Strength of the original lift away from nearby ground (1 = original).
     pub ground_assist: f32,
     /// Mii favourite colour (`colortex.val` order) for add-on vehicle liveries.
@@ -168,8 +165,7 @@ impl Default for Save {
             aspect_ratio: 0,
             resolution_w: DEFAULT_RESOLUTION_W,
             resolution_h: DEFAULT_RESOLUTION_H,
-            msaa: 0,
-            resolution: None,
+            msaa: 2,
             ground_assist: 1.0, favorite: 0, plane_wii_style: false, found: Default::default(),
         }
     }
@@ -207,15 +203,6 @@ pub fn load_from(p: &std::path::Path) -> Save {
     save.plane = save.plane.min(1 + if crate::pwr::available() { crate::vehicles::KINDS.len() as u8 } else { 0 });
     save.favorite = save.favorite.min(11);
     save.livery = save.livery.min(2);
-    if let Some(idx) = save.resolution {
-        if save.resolution_w == DEFAULT_RESOLUTION_W && save.resolution_h == DEFAULT_RESOLUTION_H {
-            const LEGACY: &[(u32, u32)] = &[(960, 540), (1280, 720), (1600, 900), (1920, 1080)];
-            if let Some(&(w, h)) = LEGACY.get(idx as usize) {
-                save.resolution_w = w;
-                save.resolution_h = h;
-            }
-        }
-    }
     if save.resolution_w == 0 || save.resolution_h == 0 {
         save.resolution_w = DEFAULT_RESOLUTION_W;
         save.resolution_h = DEFAULT_RESOLUTION_H;
@@ -243,8 +230,10 @@ pub fn msaa_sample(msaa: u8) -> Msaa {
 }
 
 pub fn plugin(app: &mut App) {
-    let save = load();
-    app.insert_resource::<Save>(save);
+    if !app.world().contains_resource::<Save>() {
+        let save = load();
+        app.insert_resource::<Save>(save);
+    }
 }
 
 #[cfg(test)]
@@ -257,7 +246,7 @@ mod tests {
         assert_eq!(old.look_sensitivity, 1.0);
         assert_eq!(old.resolution_w, DEFAULT_RESOLUTION_W);
         assert_eq!(old.resolution_h, DEFAULT_RESOLUTION_H);
-        assert_eq!(old.msaa, 0);
+        assert_eq!(old.msaa, 2);
         let p = std::env::temp_dir().join(format!("sport-island-save-{}.json", std::process::id()));
         let mut save = Save::default();
         save.write_to(&p).unwrap();
@@ -285,16 +274,6 @@ mod tests {
         assert_eq!(read.resolution_h, 1200);
         assert_eq!(read.msaa, 2);
         assert_eq!(read.bindings, save.bindings);
-        std::fs::remove_file(p).unwrap();
-    }
-
-    #[test]
-    fn legacy_resolution_index_is_upgraded() {
-        let p = std::env::temp_dir().join(format!("sport-island-legacy-{}.json", std::process::id()));
-        std::fs::write(&p, r#"{"resolution": 1}"#).unwrap();
-        let loaded = load_from(&p);
-        assert_eq!(loaded.resolution_w, 1280);
-        assert_eq!(loaded.resolution_h, 720);
         std::fs::remove_file(p).unwrap();
     }
 

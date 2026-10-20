@@ -114,7 +114,7 @@ fn smoke(
     match *phase {
         0 if now > 2.0 => { *phase = 1; }
         1 if now > 3.0 => { c.confirm = true; *phase = 2; }
-        2 if *state.get() == crate::AppState::Play && now > 5.0 => { assert!(markers.iter().count() >= 80, "all sightseeing points must spawn"); c.board = true; *boarded_at = now; *phase = 3; }
+        2 if *state.get() == crate::AppState::Play && now > 5.0 => { assert_eq!(markers.iter().count(), 80, "all 80 sightseeing points must spawn"); c.board = true; *boarded_at = now; *phase = 3; }
         3 if *mode.get() == crate::Mode::Fly => {
             // Pull back briefly to take off from water through normal input.
             if now < *boarded_at + 2.0 { c.stick.y = -0.4; }

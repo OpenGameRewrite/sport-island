@@ -45,6 +45,9 @@ pub struct TimeOfDay(pub u8);
 #[derive(Component)]
 pub struct MainCamera;
 
+/// Base vertical field of view (55°) used across camera setups and flight.
+pub const BASE_FOV_DEGREES: f32 = 55.0;
+
 /// Sky dome for one time of day.
 #[derive(Component)]
 pub(crate) struct Sky(u8);
@@ -89,7 +92,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, save: Res<Save>) {
     commands.spawn((
         Camera3d::default(),
         crate::save::msaa_sample(save.msaa),
-        Projection::Perspective(PerspectiveProjection { far: 300_000.0, near: 2.0, fov: 55f32.to_radians(), ..default() }),
+        Projection::Perspective(PerspectiveProjection { far: 300_000.0, near: 2.0, fov: BASE_FOV_DEGREES.to_radians(), ..default() }),
         Transform::from_xyz(0.0, 3000.0, 8000.0).looking_at(Vec3::ZERO, Vec3::Y),
         Tonemapping::None,
         DebandDither::Disabled,

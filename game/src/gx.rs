@@ -336,7 +336,7 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
         tev.texmtx[i * 2] = m[0];
         tev.texmtx[i * 2 + 1] = m[1];
     }
-    let at = bp(0xF3);
+    let at = def.bp.get("f3").copied().unwrap_or(0x003F_0000);
     tev.alpha_test = UVec4::new((at >> 16) & 7 | ((at >> 19) & 7) << 4 | ((at >> 22) & 3) << 8, at & 0xFF, (at >> 8) & 0xFF, 0);
     // Blending: PE CMODE0 (enable, dst factor bits 5-7, src factor bits 8-10).
     let cm = bp(0x41);
@@ -344,16 +344,14 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
     let zmode = bp(0x40);
     let z_write = zmode & 16 != 0;
     // The original sky domes never wrote to depth (bp(0x40) bit 4 was 0).
-    // Keeping them opaque with depth_write disabled ensures they render first
-    // in Bevy's opaque pass as background without depth-clipping sunset glow or
-    // moon halo, and guarantees they never render in front of transparent world
-    // objects (balloons, fireworks, sun, moon).
+    // In Bevy's opaque pass, they render without depth write as background.
+    // Each time of day has exactly one active opaque sky dome (day: mt_sky2,
+    // dusk: mt_sky4, night: vr_star), so there is never z-fighting between domes.
     // In Bevy's Transparent3d pass, negative depth_bias sorts the sky clouds,
     // sunset glow, and moon halo behind all world transparent objects (balloons,
     // fireworks, water, vehicles) while keeping their proper relative ordering:
     // sunset glow (-150k) -> moon halo (-140k) -> clouds (-130k) -> world (> -20k).
     let (alpha_mode, depth_write, depth_bias) = match def.name.as_str() {
-        "mt_sky2" | "mt_sky4" | "vr_star" => (AlphaMode::Opaque, false, 0.0),
         "mt_za_cloud2" => (AlphaMode::Blend, false, -150_000.0),
         "vr_x_moon" => (AlphaMode::Blend, false, -140_000.0),
         "mt_za_cloud" => (AlphaMode::Blend, false, -130_000.0),
@@ -502,7 +500,7 @@ mod tests {
 
     #[test]
     fn sky_and_cloud_material_depth_sorting() {
-        let make_def = |name: &str| -> GxDef {
+        let make_def = |name: &str, z_write: bool, blend: bool| -> GxDef {
             serde_json::from_value(serde_json::json!({
                 "name": name,
                 "xlu": false,
@@ -512,7 +510,7 @@ mod tests {
                 "maps": [],
                 "texmtx": [],
                 "texgen": [0, 0, 0, 0, 0, 0, 0, 0],
-                "bp": { "40": 7, "41": 13473 },
+                "bp": { "40": if z_write { 23 } else { 7 }, "41": if blend { 13473 } else { 13472 }, "f3": 4128768 },
                 "regs": [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
                 "konst": [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
             })).unwrap()
@@ -525,22 +523,29 @@ mod tests {
         let globals = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![[0f32; 4]; 11]));
         let assets = app.world().resource::<AssetServer>().clone();
 
-        let sky = decode(&make_def("mt_sky2"), "models/island.glb", &assets, globals.clone());
+        // Opaque sky domes: no depth write, no depth bias
+        let sky = decode(&make_def("mt_sky2", false, false), "models/island.glb", &assets, globals.clone());
         assert_eq!(sky.alpha_mode, AlphaMode::Opaque);
         assert!(!sky.depth_write);
         assert_eq!(sky.depth_bias, 0.0);
 
-        let sunset = decode(&make_def("mt_za_cloud2"), "models/island.glb", &assets, globals.clone());
+        // Standard world geometry: depth write enabled, depth bias 0.0
+        let world_mesh = decode(&make_def("mt_rock", true, false), "models/island.glb", &assets, globals.clone());
+        assert_eq!(world_mesh.alpha_mode, AlphaMode::Opaque);
+        assert!(world_mesh.depth_write);
+        assert_eq!(world_mesh.depth_bias, 0.0);
+
+        let sunset = decode(&make_def("mt_za_cloud2", false, true), "models/island.glb", &assets, globals.clone());
         assert_eq!(sunset.alpha_mode, AlphaMode::Blend);
         assert!(!sunset.depth_write);
         assert_eq!(sunset.depth_bias, -150_000.0);
 
-        let moon = decode(&make_def("vr_x_moon"), "models/island.glb", &assets, globals.clone());
+        let moon = decode(&make_def("vr_x_moon", false, true), "models/island.glb", &assets, globals.clone());
         assert_eq!(moon.alpha_mode, AlphaMode::Blend);
         assert!(!moon.depth_write);
         assert_eq!(moon.depth_bias, -140_000.0);
 
-        let clouds = decode(&make_def("mt_za_cloud"), "models/island.glb", &assets, globals);
+        let clouds = decode(&make_def("mt_za_cloud", false, true), "models/island.glb", &assets, globals);
         assert_eq!(clouds.alpha_mode, AlphaMode::Blend);
         assert!(!clouds.depth_write);
         assert_eq!(clouds.depth_bias, -130_000.0);
