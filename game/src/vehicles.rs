@@ -261,7 +261,7 @@ impl Flight {
         let path = b.vel.lerp(z, remap(8.88889, 17.7778, 1.0, 0.0, fwd));
         let path = path / path.length().max(0.01);
         let level_right = Vec3::Y.cross(Vec3::new(z.x, 0.0, z.z).normalize_or(Vec3::Z));
-        let pitch = ((path.y - 0.785398 * self.pitch * 0.5) * 5.0 - b.ang.dot(level_right) * 2.0).clamp(-10.0, 10.0);
+        let pitch = ((path.y - std::f32::consts::FRAC_PI_4 * self.pitch * 0.5) * 5.0 - b.ang.dot(level_right) * 2.0).clamp(-10.0, 10.0);
         b.torque += Vec3::Y.cross(z) * pitch * b.inertia.x * 10.0;
 
         // Wings carry the weight once flying; the airframe resists sideslip
@@ -359,7 +359,7 @@ impl Glider {
         let want = remap(22.2222, 4.44444, 0.00523599, 0.959931, speed) - pitch * remap(6.66667, 2.22222, 0.959931, 0.0349066, speed);
         let rate = remap(22.2222, 6.66667, 1.0, 0.0, speed) * pitch * -0.6 * remap(0.75, 0.95, 1.0, 0.0, z.y.abs());
         let nose_down = (-z.y).atan2(Vec2::new(z.x, z.z).length());
-        let roll = ((x.y + 0.785398 * self.steer) * -5.0 - b.ang.dot(z) * 4.0).clamp(-10.0, 10.0);
+        let roll = ((x.y + std::f32::consts::FRAC_PI_4 * self.steer) * -5.0 - b.ang.dot(z) * 4.0).clamp(-10.0, 10.0);
         let pitch_t = ((rate - b.ang.dot(x)) * 4.0 + (want - nose_down) * 2.5).clamp(-10.0, 10.0);
         let yaw = ((0.4 * self.steer - b.ang.dot(y)) * 4.0).clamp(-10.0, 10.0);
         b.torque += (z * roll * b.inertia.z + x * pitch_t * b.inertia.x + y * yaw * b.inertia.y) * 10.0;
@@ -445,7 +445,7 @@ impl Rocket {
         b.accelerate(accel);
         let roll = (x.y * -5.0 - b.ang.dot(z) * 4.0).clamp(-10.0, 10.0);
         let pitch = (z.y * 20.0 - b.ang.dot(x) * 4.0).clamp(-10.0, 10.0);
-        let yaw = ((input.steer * 1.0472 - b.ang.dot(y)) * 8.0).clamp(-10.0, 10.0);
+        let yaw = ((input.steer * std::f32::consts::FRAC_PI_3 - b.ang.dot(y)) * 8.0).clamp(-10.0, 10.0);
         b.torque += (z * roll * b.inertia.z + x * pitch * b.inertia.x + y * yaw * b.inertia.y) * 10.0;
     }
 }
@@ -693,7 +693,7 @@ fn camera(
     mut look: Local<Vec2>,
     mut heading: Local<Vec3>,
     q: Query<(&Vehicle, &Transform)>,
-    mut cam: Single<&mut Transform, (With<MainCamera>, Without<Vehicle>)>,
+    mut cam: Single<(&mut Transform, &mut Projection), (With<MainCamera>, Without<Vehicle>)>,
 ) {
     let Ok((v, t)) = q.single() else { return };
     let dt = time.delta_secs();
@@ -717,8 +717,16 @@ fn camera(
     let mut dist = chase * SCALE;
     if let Some(h) = col.raycast(target, dir, dist) { dist = (h.t - 10.0).max(20.0); }
     let want = target + dir * dist;
-    cam.translation = cam.translation.lerp(want, 1.0 - (-10.0 * dt).exp());
-    cam.look_at(target + fwd * 3.0 * SCALE, Vec3::Y);
+    let (ref mut cam_transform, ref mut cam_proj) = *cam;
+    let k = 1.0 - (-10.0 * dt).exp();
+    cam_transform.translation = cam_transform.translation.lerp(want, k);
+    cam_transform.look_at(target + fwd * 3.0 * SCALE, Vec3::Y);
+    if let Projection::Perspective(ref mut proj) = **cam_proj {
+        let base_fov = crate::world::BASE_FOV_DEGREES.to_radians();
+        if (proj.fov - base_fov).abs() > 1e-4 {
+            proj.fov = proj.fov.lerp(base_fov, k);
+        }
+    }
 }
 
 #[derive(Component)]

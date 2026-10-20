@@ -25,7 +25,22 @@ pub struct TevUniform {
     pub alpha_test: UVec4,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+pub struct GxMaterialKey {
+    pub depth_write: bool,
+}
+
+impl From<&GxMaterial> for GxMaterialKey {
+    fn from(material: &GxMaterial) -> GxMaterialKey {
+        GxMaterialKey {
+            depth_write: material.depth_write,
+        }
+    }
+}
+
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(GxMaterialKey)]
 pub struct GxMaterial {
     #[uniform(0)]
     pub tev: TevUniform,
@@ -56,6 +71,8 @@ pub struct GxMaterial {
     #[storage(17, read_only)]
     pub globals: Handle<ShaderBuffer>,
     pub alpha_mode: AlphaMode,
+    pub depth_write: bool,
+    pub depth_bias: f32,
     /// Texture SRTs (scale x/y, rotation degrees, translation x/y) per texcoord, for animation.
     pub srt: [[f32; 5]; 8],
     /// Unanimated CLR0 targets (material, -, ambient, -, C0..C2, K0..K3) for masked colour animation.
@@ -65,6 +82,20 @@ pub struct GxMaterial {
 impl Material for GxMaterial {
     fn fragment_shader() -> ShaderRef { "embedded://sport_island/gx.wesl".into() }
     fn alpha_mode(&self) -> AlphaMode { self.alpha_mode }
+    fn depth_bias(&self) -> f32 { self.depth_bias }
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if !key.bind_group_data.depth_write
+            && let Some(ds) = descriptor.depth_stencil.as_mut()
+        {
+            ds.depth_write_enabled = Some(false);
+        }
+        Ok(())
+    }
 }
 
 impl GxMaterial {
@@ -102,7 +133,7 @@ pub fn shaded(color: Color, globals: Handle<ShaderBuffer>) -> GxMaterial {
     tev.stages[0] = UVec4::new(15 << 12 | 15 << 8 | 15 << 4 | 10 | 1 << 19, 7 << 13 | 7 << 10 | 7 << 7 | 5 << 4 | 1 << 19, 0, 0);
     tev.mat_color = Vec4::new(c.red, c.green, c.blue, 1.0);
     tev.alpha_test = UVec4::new(7 | 7 << 4, 0, 0, 0);
-    GxMaterial { tev, t0: None, t1: None, t2: None, t3: None, t4: None, t5: None, t6: None, t7: None, globals, alpha_mode: AlphaMode::Opaque, srt: [[1.0, 1.0, 0.0, 0.0, 0.0]; 8], base: [Vec4::ONE; 11] }
+    GxMaterial { tev, t0: None, t1: None, t2: None, t3: None, t4: None, t5: None, t6: None, t7: None, globals, alpha_mode: AlphaMode::Opaque, depth_write: true, depth_bias: 0.0, srt: [[1.0, 1.0, 0.0, 0.0, 0.0]; 8], base: [Vec4::ONE; 11] }
 }
 
 /// A texture modulated by the lit, fogged material colour: what non-Wii
@@ -305,26 +336,41 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
         tev.texmtx[i * 2] = m[0];
         tev.texmtx[i * 2 + 1] = m[1];
     }
-    let at = bp(0xF3);
+    let at = def.bp.get("f3").copied().unwrap_or(0x003F_0000);
     tev.alpha_test = UVec4::new((at >> 16) & 7 | ((at >> 19) & 7) << 4 | ((at >> 22) & 3) << 8, at & 0xFF, (at >> 8) & 0xFF, 0);
     // Blending: PE CMODE0 (enable, dst factor bits 5-7, src factor bits 8-10).
     let cm = bp(0x41);
     let (blend, dst, src) = (cm & 1 != 0, (cm >> 5) & 7, (cm >> 8) & 7);
-    // An enabled blend unit does not make an opaque, depth-writing GX draw
-    // translucent. Putting these meshes in Bevy's transparent pass lets the
-    // island's large water meshes draw over the plane and other solid objects.
-    let alpha_mode = if !def.xlu && bp(0x40) & 16 != 0 {
-        if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 { AlphaMode::Mask(0.0) } else { AlphaMode::Opaque }
-    } else if blend && dst == 1 {
-        AlphaMode::Add
-    } else if blend && src == 0 && dst == 2 {
-        AlphaMode::Multiply
-    } else if blend || def.xlu {
-        AlphaMode::Blend
-    } else if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 {
-        AlphaMode::Mask(0.0)
-    } else {
-        AlphaMode::Opaque
+    let zmode = bp(0x40);
+    let z_write = zmode & 16 != 0;
+    // The original sky domes never wrote to depth (bp(0x40) bit 4 was 0).
+    // In Bevy's opaque pass, they render without depth write as background.
+    // Each time of day has exactly one active opaque sky dome (day: mt_sky2,
+    // dusk: mt_sky4, night: vr_star), so there is never z-fighting between domes.
+    // In Bevy's Transparent3d pass, negative depth_bias sorts the sky clouds,
+    // sunset glow, and moon halo behind all world transparent objects (balloons,
+    // fireworks, water, vehicles) while keeping their proper relative ordering:
+    // sunset glow (-150k) -> moon halo (-140k) -> clouds (-130k) -> world (> -20k).
+    let (alpha_mode, depth_write, depth_bias) = match def.name.as_str() {
+        "mt_za_cloud2" => (AlphaMode::Blend, false, -150_000.0),
+        "vr_x_moon" => (AlphaMode::Blend, false, -140_000.0),
+        "mt_za_cloud" => (AlphaMode::Blend, false, -130_000.0),
+        _ => {
+            let mode = if !def.xlu && z_write {
+                if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 { AlphaMode::Mask(0.0) } else { AlphaMode::Opaque }
+            } else if blend && dst == 1 {
+                AlphaMode::Add
+            } else if blend && src == 0 && dst == 2 {
+                AlphaMode::Multiply
+            } else if blend || def.xlu {
+                AlphaMode::Blend
+            } else if (at >> 16) & 7 != 7 || (at >> 19) & 7 != 7 {
+                AlphaMode::Mask(0.0)
+            } else {
+                AlphaMode::Opaque
+            };
+            (mode, z_write, 0.0)
+        }
     };
     // Bit 0: fogged; bit 8: which of the scene's fogs (only indices 0 and 1 are defined).
     let mut flags = if def.fog >= 0 { 1 | (def.fog.min(1) as u32) << 8 } else { 0 };
@@ -342,7 +388,7 @@ fn decode(def: &GxDef, path: &str, assets: &AssetServer, globals: Handle<ShaderB
     }
     let [t0, t1, t2, t3, t4, t5, t6, t7] = tex;
     let base = [tev.mat_color, Vec4::ONE, tev.amb_color, Vec4::ONE, tev.regs[1], tev.regs[2], tev.regs[3], tev.konst[0], tev.konst[1], tev.konst[2], tev.konst[3]];
-    GxMaterial { tev, t0, t1, t2, t3, t4, t5, t6, t7, globals, alpha_mode, srt, base }
+    GxMaterial { tev, t0, t1, t2, t3, t4, t5, t6, t7, globals, alpha_mode, depth_write, depth_bias, srt, base }
 }
 
 /// Swap each glTF StandardMaterial for its GX equivalent as scenes spawn.
@@ -450,5 +496,63 @@ mod tests {
         let fw = tex_mtx([2.0, 2.0, 0.0, -0.25, 0.25]);
         assert!(apply(fw, Vec2::splat(0.5)).abs_diff_eq(Vec2::ONE, 1e-6));
         assert!(apply(fw, Vec2::ZERO).abs_diff_eq(Vec2::ZERO, 1e-6));
+    }
+
+    #[test]
+    fn sky_and_cloud_material_depth_sorting() {
+        let make_def = |name: &str, z_write: bool, blend: bool| -> GxDef {
+            serde_json::from_value(serde_json::json!({
+                "name": name,
+                "xlu": false,
+                "stages": 1,
+                "fog": 0,
+                "chan": [[0, [0, 0, 0, 0], [0, 0, 0, 0]]],
+                "maps": [],
+                "texmtx": [],
+                "texgen": [0, 0, 0, 0, 0, 0, 0, 0],
+                "bp": { "40": if z_write { 23 } else { 7 }, "41": if blend { 13473 } else { 13472 }, "f3": 4128768 },
+                "regs": [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+                "konst": [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+            })).unwrap()
+        };
+
+        let mut app = App::new();
+        app.add_plugins(bevy::app::TaskPoolPlugin::default())
+            .add_plugins(bevy::asset::AssetPlugin::default())
+            .init_asset::<ShaderBuffer>();
+        let globals = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![[0f32; 4]; 11]));
+        let assets = app.world().resource::<AssetServer>().clone();
+
+        // Opaque sky domes: no depth write, no depth bias
+        let sky = decode(&make_def("mt_sky2", false, false), "models/island.glb", &assets, globals.clone());
+        assert_eq!(sky.alpha_mode, AlphaMode::Opaque);
+        assert!(!sky.depth_write);
+        assert_eq!(sky.depth_bias, 0.0);
+
+        // Standard world geometry: depth write enabled, depth bias 0.0
+        let world_mesh = decode(&make_def("mt_rock", true, false), "models/island.glb", &assets, globals.clone());
+        assert_eq!(world_mesh.alpha_mode, AlphaMode::Opaque);
+        assert!(world_mesh.depth_write);
+        assert_eq!(world_mesh.depth_bias, 0.0);
+
+        let sunset = decode(&make_def("mt_za_cloud2", false, true), "models/island.glb", &assets, globals.clone());
+        assert_eq!(sunset.alpha_mode, AlphaMode::Blend);
+        assert!(!sunset.depth_write);
+        assert_eq!(sunset.depth_bias, -150_000.0);
+
+        let moon = decode(&make_def("vr_x_moon", false, true), "models/island.glb", &assets, globals.clone());
+        assert_eq!(moon.alpha_mode, AlphaMode::Blend);
+        assert!(!moon.depth_write);
+        assert_eq!(moon.depth_bias, -140_000.0);
+
+        let clouds = decode(&make_def("mt_za_cloud", false, true), "models/island.glb", &assets, globals);
+        assert_eq!(clouds.alpha_mode, AlphaMode::Blend);
+        assert!(!clouds.depth_write);
+        assert_eq!(clouds.depth_bias, -130_000.0);
+
+        // Relative ordering: sunset glow rendered before moon/clouds, clouds before world objects
+        assert!(sunset.depth_bias < moon.depth_bias);
+        assert!(moon.depth_bias < clouds.depth_bias);
+        assert!(clouds.depth_bias < 0.0);
     }
 }

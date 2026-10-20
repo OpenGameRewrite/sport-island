@@ -58,6 +58,8 @@ pub struct Plane {
     gun_cooldown: u32,
     previous: Transform,
     boost_left: u8,
+    boost_cooldown: u8,
+    boost_sound: bool,
     boost_held: bool,
     boost_force: f32,
     boost_sign: f32,
@@ -86,7 +88,7 @@ struct PlaneColors([Vec4; 12]);
 
 impl Plane {
     fn new(pose: Transform, speed: f32) -> Self {
-        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0, jet: false, turbo: 1.0, burning: false }
+        Self { vel: pose.rotation * Vec3::Z * speed, ang: Vec3::ZERO, ctrl: Vec2::ZERO, flight: 1.0, throttle: 1.0, bank: 0.0, gun_cooldown: 0, previous: pose, boost_left: 0, boost_cooldown: 0, boost_sound: false, boost_held: false, boost_force: 0.0, boost_sign: 1.0, up_target: Vec3::Y, inverted: 0.0, ground_up: Vec3::Y, ground_strength: 0.0, water_strength: 0.0, water_release: 0.0, contact_ref: Vec3::Z, ground_assist: 1.0, jet: false, turbo: 1.0, burning: false }
     }
     /// One original-rate physics tick, independent of rendering and collision.
     /// Displayed bank (radians, right positive) on top of the flight model.
@@ -123,18 +125,27 @@ impl Plane {
         // envelope. Adapt it to trigger/key presses, never continuous held thrust.
         let accel = c.boost - c.slow;
         let held = accel.abs() > 0.15;
-        if held && !self.boost_held && self.boost_left == 0 {
+        if held && !self.boost_held && self.boost_cooldown == 0 {
             self.boost_left = 25;
+            self.boost_cooldown = 180;
             self.boost_sign = accel.signum();
+            if self.boost_sign > 0.0 {
+                self.boost_sound = true;
+            }
         }
         self.boost_held = held;
         self.boost_force = ((self.boost_force + if self.boost_left > 0 { 1.0 } else { 0.0 }) * 0.993).min(1.0);
         self.boost_left = self.boost_left.saturating_sub(1);
+        self.boost_cooldown = self.boost_cooldown.saturating_sub(1);
         if self.jet {
             // Held boost burns the turbo meter (about 3 s full), rest refills it (about 6 s).
             let burning = c.boost > 0.15 && self.turbo > 0.0;
             self.burning = burning;
             self.turbo = if burning { (self.turbo - 1.0 / 180.0).max(0.0) } else { (self.turbo + 1.0 / 360.0).min(1.0) };
+            if burning {
+                self.boost_sign = 1.0;
+                self.boost_force = (self.boost_force + 0.1).min(1.0);
+            }
             let slow = if self.boost_sign < 0.0 { self.boost_force * SLOW } else { 0.0 };
             force += z * (JET_THRUST * self.throttle + if burning { TURBO } else { 0.0 } + slow);
         } else {
@@ -477,6 +488,7 @@ fn fly(
     mut next: ResMut<NextState<Mode>>,
     mut q: Query<(&mut Plane, &mut Transform)>,
     mut player: Single<(&mut Player, &mut Transform, &mut Visibility), Without<Plane>>,
+    mut sounds: MessageWriter<crate::sound::Sound>,
 ) {
     let Ok((mut p, mut t)) = q.single_mut() else { return };
     let from = t.translation;
@@ -492,6 +504,12 @@ fn fly(
     let pitch = if save.invert_pitch {-controls.stick.y} else {controls.stick.y};
     p.water_contact(&mut t, water.map(|h| (h.t, if h.n.y < 0.0 {-h.n} else {h.n}, h.pos.y)), pitch);
     p.step_with_surface(&mut t, &controls, save.invert_pitch, surface);
+    if p.boost_sound {
+        p.boost_sound = false;
+        if !p.jet {
+            sounds.write(crate::sound::Sound::effect("SE_PLN_TWIST_START", None));
+        }
+    }
 
     // Terrain / sea: crash and bail out with the parachute.
     let step = p.vel;
@@ -709,7 +727,7 @@ fn chase_camera(
     mut heading_ref: Local<Vec3>,
     mut cam_up: Local<Vec3>,
     plane: Single<(&Plane, &Transform)>,
-    mut cam: Single<&mut Transform, (With<MainCamera>, Without<Plane>)>,
+    mut cam: Single<(&mut Transform, &mut Projection), (With<MainCamera>, Without<Plane>)>,
 ) {
     let (p, root) = *plane;
     let t = p.pose(root, fixed.overstep_fraction());
@@ -740,11 +758,24 @@ fn chase_camera(
         dist = (h.t - 10.0).max(30.0);
     }
     let want = target + dir * dist;
+    let (ref mut cam_transform, ref mut cam_proj) = *cam;
     let k = 1.0 - (-12.0 * dt).exp();
-    cam.translation = cam.translation.lerp(want, k);
+    cam_transform.translation = cam_transform.translation.lerp(want, k);
     // Roll over smoothly when the heading does flip; aim stays exact.
     *cam_up = if *cam_up == Vec3::ZERO { up } else { cam_up.lerp(up, 1.0 - (-8.0 * dt).exp()).normalize_or(up) };
-    cam.look_at(target + fwd * 60.0, *cam_up);
+    cam_transform.look_at(target + fwd * 60.0, *cam_up);
+
+    // Wii Sports Resort camera zoom: acceleration expands FOV by up to 20% (~66°),
+    // deceleration/braking narrows FOV by up to 30% (~38.5°) from base 55°.
+    let fov_factor = if p.boost_sign >= 0.0 {
+        1.0 + 0.20 * p.boost_force
+    } else {
+        1.0 - 0.30 * p.boost_force
+    };
+    let target_fov = (crate::world::BASE_FOV_DEGREES * fov_factor).to_radians();
+    if let Projection::Perspective(ref mut proj) = **cam_proj {
+        proj.fov = proj.fov.lerp(target_fov, k);
+    }
 }
 
 /// Horizontal heading the chase camera follows. It keeps the previous heading
@@ -944,6 +975,36 @@ mod tests {
     }
 
     #[test]
+    fn boost_cooldown_enforces_sound_duration() {
+        let mut pose = Transform::IDENTITY;
+        let mut plane = Plane::new(pose, 7.0);
+        let mut controls = Controls { boost: 1.0, ..default() };
+        plane.step(&mut pose, &controls, false);
+        assert!(plane.boost_sound, "boost must trigger sound flag");
+        assert_eq!(plane.boost_cooldown, 179);
+        plane.boost_sound = false;
+
+        // Release boost after 10 frames
+        controls.boost = 0.0;
+        for _ in 0..10 { plane.step(&mut pose, &controls, false); }
+        // Attempt re-press while cooldown is still active
+        controls.boost = 1.0;
+        plane.step(&mut pose, &controls, false);
+        assert!(!plane.boost_sound, "re-press within cooldown must not retrigger sound");
+
+        // Let remaining cooldown expire (180 - 1 - 10 - 1 = 168 frames)
+        controls.boost = 0.0;
+        for _ in 0..168 { plane.step(&mut pose, &controls, false); }
+        assert_eq!(plane.boost_cooldown, 0);
+
+        // Fresh press after cooldown
+        controls.boost = 1.0;
+        plane.step(&mut pose, &controls, false);
+        assert!(plane.boost_sound, "press after cooldown must trigger sound");
+        assert_eq!(plane.boost_left, 24);
+    }
+
+    #[test]
     fn pitch_input_and_inversion_are_opposites() {
         for invert in [false, true] {
             let mut pose = Transform::IDENTITY;
@@ -953,5 +1014,46 @@ mod tests {
             let height = (pose.rotation * Vec3::Z).y;
             assert!(if invert { height > 0.1 } else { height < -0.1 });
         }
+    }
+
+    #[test]
+    fn acceleration_zoom_expands_fov_on_boost_and_contracts_on_slow() {
+        use bevy::ecs::system::RunSystemOnce;
+        let base_fov = crate::world::BASE_FOV_DEGREES.to_radians();
+
+        let mut w = World::new();
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_millis(16));
+        w.insert_resource(time);
+        w.insert_resource(Time::<Fixed>::from_hz(60.0));
+        w.insert_resource(crate::collide::Collision::default());
+        w.insert_resource(Controls::default());
+
+        let pose = Transform::from_xyz(0.0, 100.0, 0.0);
+        let mut plane = Plane::new(pose, 7.0);
+        plane.boost_force = 1.0;
+        plane.boost_sign = 1.0;
+        let plane_e = w.spawn((pose, plane, Flying)).id();
+        let cam_e = w.spawn((
+            Transform::from_xyz(0.0, 100.0, 100.0),
+            Projection::Perspective(PerspectiveProjection { fov: base_fov, ..default() }),
+            crate::world::MainCamera,
+        )).id();
+
+        for _ in 0..10 {
+            w.run_system_once(chase_camera).unwrap();
+        }
+        let Projection::Perspective(proj) = w.get::<Projection>(cam_e).unwrap() else { panic!() };
+        assert!(proj.fov > base_fov, "boost should expand FOV beyond base (got {}, base {})", proj.fov, base_fov);
+
+        // Now test braking contracts FOV below base
+        let mut p = w.get_mut::<Plane>(plane_e).unwrap();
+        p.boost_force = 1.0;
+        p.boost_sign = -1.0;
+        for _ in 0..25 {
+            w.run_system_once(chase_camera).unwrap();
+        }
+        let Projection::Perspective(proj) = w.get::<Projection>(cam_e).unwrap() else { panic!() };
+        assert!(proj.fov < base_fov, "braking should contract FOV below base (got {}, base {})", proj.fov, base_fov);
     }
 }

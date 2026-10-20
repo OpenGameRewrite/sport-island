@@ -396,7 +396,15 @@ fn model(b: &[u8]) -> Result<(Vec<Mesh>, Vec<(String, [f32; 12])>)> {
     for e in 0..n_mesh {
         let r = mesh_tab + e * 16;
         let (mat, off) = (u32le(b, r + 8) as usize, u32le(b, r + 12) as usize);
-        let material = String::from_utf8_lossy(cstr(b, u32le(b, mat + 16) as usize)).to_ascii_lowercase();
+        // Each material has an array of layer offsets at `mat + 4`; layer 0's string offset is at `layer0 + 4`.
+        let name_off = (mat + 8 <= b.len() && u32le(b, mat) > 0)
+            .then(|| u32le(b, mat + 4) as usize)
+            .and_then(|lt| (lt + 4 <= b.len()).then(|| u32le(b, lt) as usize))
+            .and_then(|l0| (l0 + 8 <= b.len()).then(|| u32le(b, l0 + 4) as usize));
+        let material = name_off
+            .filter(|&o| o < b.len())
+            .map(|o| String::from_utf8_lossy(cstr(b, o)).to_ascii_lowercase())
+            .unwrap_or_default();
         let w = |i: usize| u32le(b, off + i * 4);
         ensure!(&b[off..off + 4] == b"0rtc", "mesh {e} is not a 0rtc chunk");
         let (vb, n_idx, ib) = (off + w(27) as usize, w(28) as usize, off + w(32) as usize);
@@ -851,5 +859,57 @@ mod tests {
         let hi: u32 = (8 << 28) | (8 << 24) | (4 << 20) | (4 << 16) | (2 << 12) | (2 << 8);
         let px = etc1((hi as u64) << 32);
         assert!(px.iter().all(|p| *p == [138, 70, 36]));
+    }
+
+    #[test]
+    fn model_extracts_multi_layer_material_name() {
+        // Synthesize minimal MODL buffer with a 2-layer material (like jet_lod1 glass.tex)
+        let mut b = vec![0u8; 512];
+        // Header: n_mesh = 1, mesh_tab = 0x20
+        b[0..4].copy_from_slice(&1u32.to_le_bytes());
+        b[4..8].copy_from_slice(&0x20u32.to_le_bytes());
+        // Mesh 0 entry at 0x20: group=1, skinned=0, mat=0x40, off=0x100
+        b[0x20..0x24].copy_from_slice(&1u32.to_le_bytes());
+        b[0x28..0x2C].copy_from_slice(&0x40u32.to_le_bytes());
+        b[0x2C..0x30].copy_from_slice(&0x100u32.to_le_bytes());
+        // Material at 0x40: count=2, layer_tab=0x48
+        b[0x40..0x44].copy_from_slice(&2u32.to_le_bytes());
+        b[0x44..0x48].copy_from_slice(&0x48u32.to_le_bytes());
+        // Layer tab at 0x48: layer0=0x50, layer1=0x80
+        b[0x48..0x4C].copy_from_slice(&0x50u32.to_le_bytes());
+        b[0x4C..0x50].copy_from_slice(&0x80u32.to_le_bytes());
+        // Layer 0 at 0x50: flags=8, string_off=0xC0
+        b[0x50..0x54].copy_from_slice(&8u32.to_le_bytes());
+        b[0x54..0x58].copy_from_slice(&0xC0u32.to_le_bytes());
+        // String at 0xC0: "glass.tex\0"
+        b[0xC0..0xCA].copy_from_slice(b"glass.tex\0");
+        // Minimal 0rtc chunk at 0x100
+        b[0x100..0x104].copy_from_slice(b"0rtc");
+        b[0x100 + 29 * 4..0x100 + 30 * 4].copy_from_slice(&0x1403_0000u32.to_le_bytes());
+
+        let (meshes, _) = model(&b).expect("model parsing failed");
+        assert_eq!(meshes.len(), 1);
+        assert_eq!(meshes[0].material, "glass.tex");
+    }
+
+    #[test]
+    fn model_extracts_empty_name_when_zero_layers() {
+        let mut b = vec![0u8; 512];
+        // Header: n_mesh = 1, mesh_tab = 0x20
+        b[0..4].copy_from_slice(&1u32.to_le_bytes());
+        b[4..8].copy_from_slice(&0x20u32.to_le_bytes());
+        // Mesh 0 entry at 0x20: group=1, skinned=0, mat=0x40, off=0x100
+        b[0x20..0x24].copy_from_slice(&1u32.to_le_bytes());
+        b[0x28..0x2C].copy_from_slice(&0x40u32.to_le_bytes());
+        b[0x2C..0x30].copy_from_slice(&0x100u32.to_le_bytes());
+        // Material at 0x40: count=0 (no layers)
+        b[0x40..0x44].copy_from_slice(&0u32.to_le_bytes());
+        // Minimal 0rtc chunk at 0x100
+        b[0x100..0x104].copy_from_slice(b"0rtc");
+        b[0x100 + 29 * 4..0x100 + 30 * 4].copy_from_slice(&0x1403_0000u32.to_le_bytes());
+
+        let (meshes, _) = model(&b).expect("model parsing failed");
+        assert_eq!(meshes.len(), 1);
+        assert_eq!(meshes[0].material, "");
     }
 }

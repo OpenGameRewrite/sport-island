@@ -117,6 +117,9 @@ pub enum Ui {
     South, East, West, North, Escape, Select, RightStick, Mouse, Fullscreen, GroundAssist,
     YellowGreen, Green, SkyBlue, Pink, Purple, Brown, Black,
     PlaneHandling, Original, WiiStyle,
+    Resolution, AntiAliasing, AspectRatio, All,
+    Graphics, Apply, GraphicsHint,
+    Windowed, Native, Custom, Auto,
 }
 
 const UI: &[[&str; 5]] = &[
@@ -186,6 +189,17 @@ const UI: &[[&str; 5]] = &[
     ["3DS plane handling", "Pilotage des avions 3DS", "Steuerung der 3DS-Flugzeuge", "Manejo de los aviones de 3DS", "Comandi degli aerei 3DS"],
     ["Original", "Original", "Original", "Original", "Originale"],
     ["Wii-style", "Style Wii", "Wii-Stil", "Estilo Wii", "Stile Wii"],
+    ["Resolution", "Résolution", "Auflösung", "Resolución", "Risoluzione"],
+    ["Anti-aliasing", "Anticrénelage", "Kantenglättung", "Antialiasing", "Antialiasing"],
+    ["Aspect ratio", "Format d'image", "Seitenverhältnis", "Relación de aspecto", "Rapporto d'aspetto"],
+    ["All", "Tous", "Alle", "Todas", "Tutti"],
+    ["Graphics", "Graphismes", "Grafik", "Gráficos", "Grafica"],
+    ["Apply", "Appliquer", "Anwenden", "Aplicar", "Applica"],
+    ["Click to select · ‹ › to change · Apply to save", "Cliquez pour choisir · ‹ › modifier · Appliquer pour enregistrer", "Klicken: wählen · ‹ › ändern · Anwenden zum Speichern", "Clic para elegir · ‹ › cambiar · Aplicar para guardar", "Clic per scegliere · ‹ › cambia · Applica per salvare"],
+    ["Windowed", "Fenêtré", "Fenstermodus", "Ventana", "Finestra"],
+    ["Native", "Native", "Nativ", "Nativa", "Nativa"],
+    ["Custom", "Personnalisée", "Benutzerdefiniert", "Personalizada", "Personalizzata"],
+    ["Auto", "Auto", "Auto", "Automático", "Automatico"],
 ];
 
 const ACTIONS: &[[&str; 5]] = &[

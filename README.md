@@ -22,7 +22,7 @@ cargo run --release --locked -j 2 -p sport-island
 
 Choose your language, aircraft and color, then select **Explore**. Menus support
 mouse clicks, arrow keys and gamepads. **Settings** includes flight/camera
-sensitivity, ground assist, pitch inversion, a speedometer and fullscreen; **Controls** saves your bindings.
+sensitivity, ground assist, pitch inversion, a speedometer, fullscreen, aspect ratio, resolution and anti-aliasing; **Controls** saves your bindings.
 
 ## Controls
 
@@ -46,7 +46,9 @@ On a gamepad the time of day, i-point list and speedometer are unbound by
 default so they never clash with flying; **Controls** can give them buttons.
 
 Pull back on the stick (S) to take off from the water. Boost and slowing are
-temporary impulses: release and press again to repeat them. The optional
+temporary impulses: after a boost completes, a cooldown (~3 s / 180 ticks)
+applies before the next impulse can be triggered, approximating the physical delay
+of shaking the Wii Remote and preventing overlapping boost audio. The optional
 speedometer shows game units per second and the remaining impulse. Free look
 holds briefly before returning to the flight camera. Hold ↑/↓ or use the wheel
 to browse i-points; ←/→ changes pages. The paused ⓘ counter also opens the list.

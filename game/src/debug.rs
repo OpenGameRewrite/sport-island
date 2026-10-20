@@ -60,6 +60,13 @@ pub fn plugin(app: &mut App) {
     if std::env::var("SI_SHOT").is_ok() {
         app.add_systems(Update, shoot);
     }
+    if let Ok(bench_str) = std::env::var("SI_BENCH") {
+        let duration: f32 = bench_str.parse().unwrap_or(5.0);
+        let warmup: f32 = std::env::var("SI_WARMUP").ok().and_then(|s| s.parse().ok()).unwrap_or(2.0);
+        app.insert_resource(BenchConfig { duration, warmup });
+        app.init_resource::<BenchState>();
+        app.add_systems(Last, bench_collector);
+    }
     if std::env::var("SI_CAM").is_ok() {
         app.add_systems(PostUpdate, place_camera.before(crate::world::sky_follow));
     }
@@ -99,14 +106,16 @@ fn smoke(
     mut c: ResMut<crate::input::Controls>, mut phase: Local<u8>, mut paused_at: Local<Option<Vec3>>, mut boarded_at: Local<f32>,
     plane: Query<&Transform, With<crate::plane::Flying>>, menu: Res<crate::menu::Menu>,
     markers: Query<&crate::ipoint::Marker>,
+    points: Res<crate::ipoint::IPoints>,
     names: Query<&Name>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     assert!(std::env::var_os("SI_SAVE").is_some(), "SI_SMOKE requires SI_SAVE to protect real progress");
     let now = time.elapsed_secs();
     match *phase {
         0 if now > 2.0 => { *phase = 1; }
         1 if now > 3.0 => { c.confirm = true; *phase = 2; }
-        2 if *state.get() == crate::AppState::Play && now > 5.0 => { assert_eq!(markers.iter().count(), 80, "all sightseeing points must spawn"); c.board = true; *boarded_at = now; *phase = 3; }
+        2 if *state.get() == crate::AppState::Play && now > 5.0 => { assert_eq!(markers.iter().count(), points.0.len(), "all sightseeing points must spawn"); c.board = true; *boarded_at = now; *phase = 3; }
         3 if *mode.get() == crate::Mode::Fly => {
             // Pull back briefly to take off from water through normal input.
             if now < *boarded_at + 2.0 { c.stick.y = -0.4; }
@@ -129,7 +138,11 @@ fn smoke(
             c.time = true;
             *phase = 8;
         }
-        8 if now > 17.0 => { info!("SI_SMOKE passed: play, board, cockpit pilot, gun, flare, pause/resume, eject, time change"); *phase = 9; }
+        8 if now > 17.0 => {
+            info!("SI_SMOKE passed: play, board, cockpit pilot, gun, flare, pause/resume, eject, time change");
+            exit.write(AppExit::Success);
+            *phase = 9;
+        }
         _ => {}
     }
 }
@@ -226,3 +239,54 @@ fn inspect_model(mut commands: Commands, assets: Res<AssetServer>) {
         Transform::from_translation(center + Vec3::new(yaw.sin(), 0.35, yaw.cos()) * dist).looking_at(center, Vec3::Y),
     ));
 }
+
+#[derive(Resource)]
+struct BenchConfig {
+    duration: f32,
+    warmup: f32,
+}
+
+#[derive(Resource, Default)]
+struct BenchState {
+    deltas: Vec<f32>,
+    warmup_done: bool,
+    start_time: f32,
+}
+
+fn bench_collector(
+    config: Res<BenchConfig>,
+    mut state: ResMut<BenchState>,
+    time: Res<Time<Real>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let elapsed = time.elapsed_secs();
+    if !state.warmup_done {
+        if elapsed >= config.warmup {
+            state.warmup_done = true;
+            state.start_time = elapsed;
+        }
+        return;
+    }
+    state.deltas.push(time.delta_secs());
+    if elapsed - state.start_time >= config.duration {
+        let count = state.deltas.len();
+        if count > 0 {
+            let total: f32 = state.deltas.iter().sum();
+            let avg_fps = count as f32 / total;
+            let avg_ms = (total / count as f32) * 1000.0;
+            let mut sorted = state.deltas.clone();
+            sorted.sort_by(|a, b| a.total_cmp(b));
+            let p50_ms = sorted[count * 50 / 100] * 1000.0;
+            let p95_ms = sorted[count * 95 / 100] * 1000.0;
+            let p99_ms = sorted[count * 99 / 100] * 1000.0;
+            let min_ms = sorted[0] * 1000.0;
+            let max_ms = sorted[count - 1] * 1000.0;
+            eprintln!(
+                "SI_BENCH_RESULT: frames={} total_sec={:.2} avg_fps={:.1} avg_ms={:.2} min_ms={:.2} p50_ms={:.2} p95_ms={:.2} p99_ms={:.2} max_ms={:.2}",
+                count, total, avg_fps, avg_ms, min_ms, p50_ms, p95_ms, p99_ms, max_ms
+            );
+        }
+        exit.write(AppExit::Success);
+    }
+}
+

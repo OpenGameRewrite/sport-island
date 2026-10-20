@@ -139,8 +139,9 @@ fn camera(
     col: Res<Collision>,
     time: Res<Time>,
     player: Single<&Transform, With<Player>>,
-    mut cam: Single<&mut Transform, (With<MainCamera>, Without<Player>)>,
+    mut cam: Single<(&mut Transform, &mut Projection), (With<MainCamera>, Without<Player>)>,
 ) {
+    let (ref mut cam_transform, ref mut cam_proj) = *cam;
     if c.recenter {
         // Behind the player's facing (+Z), at the default height.
         let facing = player.rotation * Vec3::Z;
@@ -158,8 +159,14 @@ fn camera(
     }
     let want = target + dir * dist;
     let k = (12.0 * time.delta_secs()).min(1.0);
-    cam.translation = cam.translation.lerp(want, k);
-    cam.look_at(target, Vec3::Y);
+    cam_transform.translation = cam_transform.translation.lerp(want, k);
+    cam_transform.look_at(target, Vec3::Y);
+    if let Projection::Perspective(ref mut proj) = **cam_proj {
+        let base_fov = crate::world::BASE_FOV_DEGREES.to_radians();
+        if (proj.fov - base_fov).abs() > 1e-4 {
+            proj.fov = proj.fov.lerp(base_fov, k);
+        }
+    }
 }
 
 /// The same original character, seated in a cockpit or standing on foot.

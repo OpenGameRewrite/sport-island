@@ -45,6 +45,9 @@ pub struct TimeOfDay(pub u8);
 #[derive(Component)]
 pub struct MainCamera;
 
+/// Base vertical field of view (55°) used across camera setups and flight.
+pub const BASE_FOV_DEGREES: f32 = 55.0;
+
 /// Sky dome for one time of day.
 #[derive(Component)]
 pub(crate) struct Sky(u8);
@@ -66,7 +69,7 @@ pub fn plugin(app: &mut App) {
         .insert_resource(TimeOfDay(time))
         .insert_resource(ClearColor(Color::srgb(0.4, 0.8, 1.0)))
         .add_systems(Startup, setup)
-        .add_systems(Update, (apply_time.run_if(resource_changed::<TimeOfDay>), cycle_time.run_if(crate::menu::playing)))
+        .add_systems(Update, (apply_time.run_if(resource_changed::<TimeOfDay>), cycle_time.run_if(crate::menu::playing), apply_msaa.run_if(resource_changed::<Save>)))
         // After every camera system has moved the camera this frame.
         .add_systems(PostUpdate, sky_follow.before(TransformSystems::Propagate));
 }
@@ -75,7 +78,7 @@ fn island_scene(assets: &AssetServer, i: usize) -> WorldAssetRoot {
     WorldAssetRoot(assets.load(GltfAssetLabel::Scene(i).from_asset("models/island.glb")))
 }
 
-fn setup(mut commands: Commands, assets: Res<AssetServer>) {
+fn setup(mut commands: Commands, assets: Res<AssetServer>, save: Res<Save>) {
     // island.glb scenes: island, island_L, island_R, island_V, sea, under, vr, vr_E, vr_N.
     // island_R duplicates the island for the water reflection pass; not needed here.
     commands.spawn(island_scene(&assets, 0)).observe(hide_crater_lid);
@@ -88,13 +91,23 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     }
     commands.spawn((
         Camera3d::default(),
-        Projection::Perspective(PerspectiveProjection { far: 300_000.0, near: 2.0, fov: 55f32.to_radians(), ..default() }),
+        crate::save::msaa_sample(save.msaa),
+        Projection::Perspective(PerspectiveProjection { far: 300_000.0, near: 2.0, fov: BASE_FOV_DEGREES.to_radians(), ..default() }),
         Transform::from_xyz(0.0, 3000.0, 8000.0).looking_at(Vec3::ZERO, Vec3::Y),
         Tonemapping::None,
         DebandDither::Disabled,
         MainCamera,
         SpatialListener::new(20.0),
     ));
+}
+
+fn apply_msaa(save: Res<Save>, mut cam: Query<&mut Msaa, With<MainCamera>>) {
+    for mut msaa in &mut cam {
+        let target = crate::save::msaa_sample(save.msaa);
+        if *msaa != target {
+            *msaa = target;
+        }
+    }
 }
 
 /// A flat, black-vertex-coloured disc caps the volcano's chimney halfway down,

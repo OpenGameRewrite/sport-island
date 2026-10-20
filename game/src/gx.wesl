@@ -98,6 +98,53 @@ fn alpha_cmp(comp: u32, a: f32, r: f32) -> bool {
     }
 }
 
+fn calc_tc(i: u32, uv0: vec2<f32>, uv1: vec2<f32>, vn: vec3<f32>) -> vec2<f32> {
+    let src = tev.texgen[i].x;
+    let mode = tev.texgen[i].y;
+    var st = uv0;
+    if src == 6u { st = uv1; }
+    if mode == 1u || mode == 3u || mode == 4u || mode == 2u {
+        st = vn.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    }
+    let r0 = tev.texmtx[i * 2u];
+    let r1 = tev.texmtx[i * 2u + 1u];
+    return vec2<f32>(dot(r0.xyz, vec3<f32>(st, 1.0)), dot(r1.xyz, vec3<f32>(st, 1.0)));
+}
+
+fn get_cin(sel: u32, r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, r3: vec4<f32>, texc: vec4<f32>, rasc: vec4<f32>, kc: vec4<f32>) -> vec3<f32> {
+    switch sel {
+        case 0u: { return r0.rgb; }
+        case 1u: { return vec3<f32>(r0.a); }
+        case 2u: { return r1.rgb; }
+        case 3u: { return vec3<f32>(r1.a); }
+        case 4u: { return r2.rgb; }
+        case 5u: { return vec3<f32>(r2.a); }
+        case 6u: { return r3.rgb; }
+        case 7u: { return vec3<f32>(r3.a); }
+        case 8u: { return texc.rgb; }
+        case 9u: { return vec3<f32>(texc.a); }
+        case 10u: { return rasc.rgb; }
+        case 11u: { return vec3<f32>(rasc.a); }
+        case 12u: { return vec3<f32>(1.0); }
+        case 13u: { return vec3<f32>(0.5); }
+        case 14u: { return kc.rgb; }
+        default: { return vec3<f32>(0.0); }
+    }
+}
+
+fn get_ain(sel: u32, r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, r3: vec4<f32>, texc: vec4<f32>, rasc: vec4<f32>, ka: vec4<f32>) -> f32 {
+    switch sel {
+        case 0u: { return r0.a; }
+        case 1u: { return r1.a; }
+        case 2u: { return r2.a; }
+        case 3u: { return r3.a; }
+        case 4u: { return texc.a; }
+        case 5u: { return rasc.a; }
+        case 6u: { return ka.a; }
+        default: { return 0.0; }
+    }
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
@@ -109,21 +156,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     @if(VERTEX_UVS_B) { uv1 = in.uv_b; }
     var vcol = vec4<f32>(1.0);
     @if(VERTEX_COLORS) { vcol = in.color; }
-
-    // Texture coordinates.
-    var tc: array<vec2<f32>, 8>;
-    for (var i = 0u; i < 8u; i++) {
-        let src = tev.texgen[i].x;
-        let mode = tev.texgen[i].y;
-        var st = uv0;
-        if src == 6u { st = uv1; }
-        if mode == 1u || mode == 3u || mode == 4u || mode == 2u {
-            st = vn.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-        }
-        let r0 = tev.texmtx[i * 2u];
-        let r1 = tev.texmtx[i * 2u + 1u];
-        tc[i] = vec2<f32>(dot(r0.xyz, vec3<f32>(st, 1.0)), dot(r1.xyz, vec3<f32>(st, 1.0)));
-    }
 
     // Colour channel 0 (material/vertex colour times lighting).
     let cctrl = tev.chan.x;
@@ -152,7 +184,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let order = st.z;
         var texc = vec4<f32>(1.0);
         if ((order >> 6u) & 1u) != 0u {
-            texc = swizzle(sample_map(order & 7u, tc[(order >> 3u) & 7u]), (aenv >> 2u) & 3u);
+            let tc = calc_tc((order >> 3u) & 7u, uv0, uv1, vn);
+            texc = swizzle(sample_map(order & 7u, tc), (aenv >> 2u) & 3u);
         }
         let chan = (order >> 7u) & 7u;
         var rasc = vec4<f32>(0.0);
@@ -160,23 +193,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let kc = konst_value(st.w & 31u, false);
         let ka = konst_value((st.w >> 8u) & 31u, true);
 
-        var cin: array<vec3<f32>, 16>;
-        cin[0] = r[0].rgb; cin[1] = vec3<f32>(r[0].a);
-        cin[2] = r[1].rgb; cin[3] = vec3<f32>(r[1].a);
-        cin[4] = r[2].rgb; cin[5] = vec3<f32>(r[2].a);
-        cin[6] = r[3].rgb; cin[7] = vec3<f32>(r[3].a);
-        cin[8] = texc.rgb; cin[9] = vec3<f32>(texc.a);
-        cin[10] = rasc.rgb; cin[11] = vec3<f32>(rasc.a);
-        cin[12] = vec3<f32>(1.0); cin[13] = vec3<f32>(0.5);
-        cin[14] = kc.rgb; cin[15] = vec3<f32>(0.0);
-        var ain: array<f32, 8>;
-        ain[0] = r[0].a; ain[1] = r[1].a; ain[2] = r[2].a; ain[3] = r[3].a;
-        ain[4] = texc.a; ain[5] = rasc.a; ain[6] = ka.a; ain[7] = 0.0;
-
-        let ca = clamp(cin[(cenv >> 12u) & 15u], vec3<f32>(0.0), vec3<f32>(1.0));
-        let cb = clamp(cin[(cenv >> 8u) & 15u], vec3<f32>(0.0), vec3<f32>(1.0));
-        let cc = clamp(cin[(cenv >> 4u) & 15u], vec3<f32>(0.0), vec3<f32>(1.0));
-        let cd = cin[cenv & 15u];
+        let ca = clamp(get_cin((cenv >> 12u) & 15u, r[0], r[1], r[2], r[3], texc, rasc, kc), vec3<f32>(0.0), vec3<f32>(1.0));
+        let cb = clamp(get_cin((cenv >> 8u) & 15u, r[0], r[1], r[2], r[3], texc, rasc, kc), vec3<f32>(0.0), vec3<f32>(1.0));
+        let cc = clamp(get_cin((cenv >> 4u) & 15u, r[0], r[1], r[2], r[3], texc, rasc, kc), vec3<f32>(0.0), vec3<f32>(1.0));
+        let cd = get_cin(cenv & 15u, r[0], r[1], r[2], r[3], texc, rasc, kc);
         var cout: vec3<f32>;
         if ((cenv >> 16u) & 3u) == 3u {
             // Compare mode (only the per-channel variants are approximated).
@@ -190,10 +210,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         if ((cenv >> 19u) & 1u) == 1u { cout = clamp(cout, vec3<f32>(0.0), vec3<f32>(1.0)); }
 
-        let aa = clamp(ain[(aenv >> 13u) & 7u], 0.0, 1.0);
-        let ab = clamp(ain[(aenv >> 10u) & 7u], 0.0, 1.0);
-        let ac = clamp(ain[(aenv >> 7u) & 7u], 0.0, 1.0);
-        let ad = ain[(aenv >> 4u) & 7u];
+        let aa = clamp(get_ain((aenv >> 13u) & 7u, r[0], r[1], r[2], r[3], texc, rasc, ka), 0.0, 1.0);
+        let ab = clamp(get_ain((aenv >> 10u) & 7u, r[0], r[1], r[2], r[3], texc, rasc, ka), 0.0, 1.0);
+        let ac = clamp(get_ain((aenv >> 7u) & 7u, r[0], r[1], r[2], r[3], texc, rasc, ka), 0.0, 1.0);
+        let ad = get_ain((aenv >> 4u) & 7u, r[0], r[1], r[2], r[3], texc, rasc, ka);
         var aout: f32;
         if ((aenv >> 16u) & 3u) == 3u {
             let gt = ((aenv >> 18u) & 1u) == 0u;
@@ -214,12 +234,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Alpha test.
     let at = tev.alpha_test;
-    let p0 = alpha_cmp(at.x & 7u, out.a, f32(at.y) / 255.0);
-    let p1 = alpha_cmp((at.x >> 4u) & 7u, out.a, f32(at.z) / 255.0);
-    let op = (at.x >> 8u) & 3u;
-    var keep = p0 && p1;
-    if op == 1u { keep = p0 || p1; } else if op == 2u { keep = p0 != p1; } else if op == 3u { keep = p0 == p1; }
-    if !keep { discard; }
+    if (at.x & 0x77u) != 0x77u {
+        let p0 = alpha_cmp(at.x & 7u, out.a, f32(at.y) / 255.0);
+        let p1 = alpha_cmp((at.x >> 4u) & 7u, out.a, f32(at.z) / 255.0);
+        let op = (at.x >> 8u) & 3u;
+        var keep = p0 && p1;
+        if op == 1u { keep = p0 || p1; } else if op == 2u { keep = p0 != p1; } else if op == 3u { keep = p0 == p1; }
+        if !keep { discard; }
+    }
 
     // Fog selected by the material (GX fog index).
     // ponytail: every non-zero GX fog type is treated as linear (the island only uses linear).

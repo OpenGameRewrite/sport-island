@@ -99,6 +99,40 @@ fn bias_scale(v: f32, env: u32) -> f32 {
     return r;
 }
 
+fn get_cin(sel: u32, r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, r3: vec4<f32>, texc: vec4<f32>, ras: vec4<f32>, kc: vec4<f32>) -> vec3<f32> {
+    switch sel {
+        case 0u: { return r0.rgb; }
+        case 1u: { return vec3<f32>(r0.a); }
+        case 2u: { return r1.rgb; }
+        case 3u: { return vec3<f32>(r1.a); }
+        case 4u: { return r2.rgb; }
+        case 5u: { return vec3<f32>(r2.a); }
+        case 6u: { return r3.rgb; }
+        case 7u: { return vec3<f32>(r3.a); }
+        case 8u: { return texc.rgb; }
+        case 9u: { return vec3<f32>(texc.a); }
+        case 10u: { return ras.rgb; }
+        case 11u: { return vec3<f32>(ras.a); }
+        case 12u: { return vec3<f32>(1.0); }
+        case 13u: { return vec3<f32>(0.5); }
+        case 14u: { return kc.rgb; }
+        default: { return vec3<f32>(0.0); }
+    }
+}
+
+fn get_ain(sel: u32, r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, r3: vec4<f32>, texc: vec4<f32>, ras: vec4<f32>, ka: vec4<f32>) -> f32 {
+    switch sel {
+        case 0u: { return r0.a; }
+        case 1u: { return r1.a; }
+        case 2u: { return r2.a; }
+        case 3u: { return r3.a; }
+        case 4u: { return texc.a; }
+        case 5u: { return ras.a; }
+        case 6u: { return ka.a; }
+        default: { return 0.0; }
+    }
+}
+
 // GX adds in gamma space; the linear target would make glows far too faint
 // over a bright sky. Add what gamma-space addition would over the scene's
 // fog/sky colour, an estimate of the background.
@@ -128,34 +162,22 @@ fn fragment(inp: Out) -> @location(0) vec4<f32> {
         if st.z == 0u { texc = tex1; } else if st.z == 1u { texc = tex2; }
         let kc = konst_value(st.w & 255u, k);
         let ka = konst_value((st.w >> 8u) & 255u, k);
-        var cin: array<vec3<f32>, 16>;
-        cin[0] = r[0].rgb; cin[1] = vec3<f32>(r[0].a);
-        cin[2] = r[1].rgb; cin[3] = vec3<f32>(r[1].a);
-        cin[4] = r[2].rgb; cin[5] = vec3<f32>(r[2].a);
-        cin[6] = r[3].rgb; cin[7] = vec3<f32>(r[3].a);
-        cin[8] = texc.rgb; cin[9] = vec3<f32>(texc.a);
-        cin[10] = ras.rgb; cin[11] = vec3<f32>(ras.a);
-        cin[12] = vec3<f32>(1.0); cin[13] = vec3<f32>(0.5);
-        cin[14] = kc.rgb; cin[15] = vec3<f32>(0.0);
-        var ain: array<f32, 8>;
-        ain[0] = r[0].a; ain[1] = r[1].a; ain[2] = r[2].a; ain[3] = r[3].a;
-        ain[4] = texc.a; ain[5] = ras.a; ain[6] = ka.a; ain[7] = 0.0;
 
         let ce = st.x;
-        let ca = clamp(cin[ce & 15u], vec3<f32>(0.0), vec3<f32>(1.0));
-        let cb = clamp(cin[(ce >> 4u) & 15u], vec3<f32>(0.0), vec3<f32>(1.0));
-        let cc = clamp(cin[(ce >> 8u) & 15u], vec3<f32>(0.0), vec3<f32>(1.0));
-        let cd = cin[(ce >> 12u) & 15u];
+        let ca = clamp(get_cin(ce & 15u, r[0], r[1], r[2], r[3], texc, ras, kc), vec3<f32>(0.0), vec3<f32>(1.0));
+        let cb = clamp(get_cin((ce >> 4u) & 15u, r[0], r[1], r[2], r[3], texc, ras, kc), vec3<f32>(0.0), vec3<f32>(1.0));
+        let cc = clamp(get_cin((ce >> 8u) & 15u, r[0], r[1], r[2], r[3], texc, ras, kc), vec3<f32>(0.0), vec3<f32>(1.0));
+        let cd = get_cin((ce >> 12u) & 15u, r[0], r[1], r[2], r[3], texc, ras, kc);
         let clerp = mix(ca, cb, cc);
         let cv = select(cd + clerp, cd - clerp, ((ce >> 16u) & 3u) == 1u);
         var cout = vec3<f32>(bias_scale(cv.r, ce), bias_scale(cv.g, ce), bias_scale(cv.b, ce));
         if ((ce >> 22u) & 1u) == 1u { cout = clamp(cout, vec3<f32>(0.0), vec3<f32>(1.0)); }
 
         let ae = st.y;
-        let aa = clamp(ain[ae & 7u], 0.0, 1.0);
-        let ab = clamp(ain[(ae >> 4u) & 7u], 0.0, 1.0);
-        let ac = clamp(ain[(ae >> 8u) & 7u], 0.0, 1.0);
-        let ad = ain[(ae >> 12u) & 7u];
+        let aa = clamp(get_ain(ae & 7u, r[0], r[1], r[2], r[3], texc, ras, ka), 0.0, 1.0);
+        let ab = clamp(get_ain((ae >> 4u) & 7u, r[0], r[1], r[2], r[3], texc, ras, ka), 0.0, 1.0);
+        let ac = clamp(get_ain((ae >> 8u) & 7u, r[0], r[1], r[2], r[3], texc, ras, ka), 0.0, 1.0);
+        let ad = get_ain((ae >> 12u) & 7u, r[0], r[1], r[2], r[3], texc, ras, ka);
         let alerp = mix(aa, ab, ac);
         var aout = bias_scale(select(ad + alerp, ad - alerp, ((ae >> 16u) & 3u) == 1u), ae);
         if ((ae >> 22u) & 1u) == 1u { aout = clamp(aout, 0.0, 1.0); }
