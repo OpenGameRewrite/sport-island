@@ -400,8 +400,7 @@ fn model(b: &[u8]) -> Result<(Vec<Mesh>, Vec<(String, [f32; 12])>)> {
         let name_off = (mat + 8 <= b.len() && u32le(b, mat) > 0)
             .then(|| u32le(b, mat + 4) as usize)
             .and_then(|lt| (lt + 4 <= b.len()).then(|| u32le(b, lt) as usize))
-            .and_then(|l0| (l0 + 8 <= b.len()).then(|| u32le(b, l0 + 4) as usize))
-            .or_else(|| (mat + 20 <= b.len()).then(|| u32le(b, mat + 16) as usize));
+            .and_then(|l0| (l0 + 8 <= b.len()).then(|| u32le(b, l0 + 4) as usize));
         let material = name_off
             .filter(|&o| o < b.len())
             .map(|o| String::from_utf8_lossy(cstr(b, o)).to_ascii_lowercase())
@@ -894,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn model_extracts_fallback_when_zero_layers() {
+    fn model_extracts_empty_name_when_zero_layers() {
         let mut b = vec![0u8; 512];
         // Header: n_mesh = 1, mesh_tab = 0x20
         b[0..4].copy_from_slice(&1u32.to_le_bytes());
@@ -903,17 +902,14 @@ mod tests {
         b[0x20..0x24].copy_from_slice(&1u32.to_le_bytes());
         b[0x28..0x2C].copy_from_slice(&0x40u32.to_le_bytes());
         b[0x2C..0x30].copy_from_slice(&0x100u32.to_le_bytes());
-        // Material at 0x40: count=0 (no layers), mat + 16 has fallback string_off=0xC0
+        // Material at 0x40: count=0 (no layers)
         b[0x40..0x44].copy_from_slice(&0u32.to_le_bytes());
-        b[0x40 + 16..0x40 + 20].copy_from_slice(&0xC0u32.to_le_bytes());
-        // String at 0xC0: "fallback.mat\0"
-        b[0xC0..0xCD].copy_from_slice(b"fallback.mat\0");
         // Minimal 0rtc chunk at 0x100
         b[0x100..0x104].copy_from_slice(b"0rtc");
         b[0x100 + 29 * 4..0x100 + 30 * 4].copy_from_slice(&0x1403_0000u32.to_le_bytes());
 
         let (meshes, _) = model(&b).expect("model parsing failed");
         assert_eq!(meshes.len(), 1);
-        assert_eq!(meshes[0].material, "fallback.mat");
+        assert_eq!(meshes[0].material, "");
     }
 }
