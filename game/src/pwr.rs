@@ -300,7 +300,7 @@ fn convert_materials(
             // it out instead so the columns stay see-through.
             if name.is_some_and(|n| n.0 == "mat_thin.mat") { mat.tev.mat_color.w = 0.25; }
             // Pilotwings Resort Jet cockpit canopy is dark tinted translucent glass.
-            if name.is_some_and(|n| n.0 == "\x04") {
+            if name.is_some_and(|n| n.0 == "glass.tex") {
                 mat.alpha_mode = AlphaMode::Blend;
                 mat.tev.mat_color = Vec4::new(0.08, 0.08, 0.10, 0.65);
             }

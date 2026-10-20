@@ -71,7 +71,15 @@ pub fn detect_aspect_ratio(w: u32, h: u32) -> &'static str {
     }
 }
 
-pub fn available_resolutions(aspect_idx: u8, monitor: Option<(u32, u32)>) -> Vec<(u32, u32, bool, &'static str)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AvailableResolution {
+    pub w: u32,
+    pub h: u32,
+    pub is_native: bool,
+    pub aspect: &'static str,
+}
+
+pub fn available_resolutions(aspect_idx: u8, monitor: Option<(u32, u32)>) -> Vec<AvailableResolution> {
     let active_aspect = match aspect_idx {
         0 => monitor.map(|(w, h)| detect_aspect_ratio(w, h)).unwrap_or("16:9"),
         1 => "16:9",
@@ -90,7 +98,7 @@ pub fn available_resolutions(aspect_idx: u8, monitor: Option<(u32, u32)>) -> Vec
             tag => r.aspect == tag,
         };
         if matches {
-            list.push((r.w, r.h, false, r.aspect));
+            list.push(AvailableResolution { w: r.w, h: r.h, is_native: false, aspect: r.aspect });
         }
     }
 
@@ -101,14 +109,14 @@ pub fn available_resolutions(aspect_idx: u8, monitor: Option<(u32, u32)>) -> Vec
             "4:3" => m_aspect == "4:3" || m_aspect == "5:4",
             tag => m_aspect == tag,
         };
-        if matches && !list.iter().any(|(w, h, _, _)| *w == mw && *h == mh) {
-            list.push((mw, mh, true, m_aspect));
-            list.sort_by_key(|(w, h, _, _)| (*w, *h));
+        if matches && !list.iter().any(|r| r.w == mw && r.h == mh) {
+            list.push(AvailableResolution { w: mw, h: mh, is_native: true, aspect: m_aspect });
+            list.sort_by_key(|r| (r.w, r.h));
         }
     }
 
     if list.is_empty() {
-        list.push((DEFAULT_RESOLUTION_W, DEFAULT_RESOLUTION_H, false, "16:9"));
+        list.push(AvailableResolution { w: DEFAULT_RESOLUTION_W, h: DEFAULT_RESOLUTION_H, is_native: false, aspect: "16:9" });
     }
     list
 }
@@ -273,9 +281,9 @@ mod tests {
     #[test]
     fn aspect_ratio_filtering_works() {
         let r16_9 = available_resolutions(1, None);
-        assert!(r16_9.iter().all(|(w, h, _, _)| (*w as f32 / *h as f32 - 1.777).abs() < 0.05));
+        assert!(r16_9.iter().all(|r| (r.w as f32 / r.h as f32 - 1.777).abs() < 0.05));
         let r16_10 = available_resolutions(2, None);
-        assert!(r16_10.iter().all(|(w, h, _, _)| (*w as f32 / *h as f32 - 1.6).abs() < 0.05));
+        assert!(r16_10.iter().all(|r| (r.w as f32 / r.h as f32 - 1.6).abs() < 0.05));
         let all = available_resolutions(5, None);
         assert!(all.len() >= STANDARD_RESOLUTIONS.len());
     }

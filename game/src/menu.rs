@@ -75,18 +75,12 @@ fn window_mode(save: Res<Save>, mut window: Single<&mut Window, With<PrimaryWind
     let target = (save.resolution_w, save.resolution_h, save.fullscreen);
     let mode = if save.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
     if window.mode != mode { window.mode = mode; }
-    if !save.fullscreen {
-        let cur_w = window.resolution.physical_width();
-        let cur_h = window.resolution.physical_height();
-        if cur_w != save.resolution_w || cur_h != save.resolution_h {
-            if applied.as_ref() != Some(&target) {
-                window.resolution.set_physical_resolution(save.resolution_w, save.resolution_h);
-                *applied = Some(target);
-            }
-        } else {
-            *applied = Some(target);
+    if applied.as_ref() != Some(&target) {
+        if !save.fullscreen
+            && (window.resolution.physical_width() != save.resolution_w || window.resolution.physical_height() != save.resolution_h)
+        {
+            window.resolution.set_physical_resolution(save.resolution_w, save.resolution_h);
         }
-    } else {
         *applied = Some(target);
     }
 }
@@ -265,19 +259,19 @@ pub fn pause_input(
                 1 => {
                     pending.aspect_ratio = ((pending.aspect_ratio as i32 + step).rem_euclid(crate::save::ASPECT_RATIO_LABELS.len() as i32)) as u8;
                     let avail = crate::save::available_resolutions(pending.aspect_ratio, mon);
-                    if !avail.iter().any(|(w, h, _, _)| *w == pending.resolution_w && *h == pending.resolution_h)
-                        && let Some(best) = avail.iter().min_by_key(|(w, _, _, _)| (*w as i32 - pending.resolution_w as i32).abs())
+                    if !avail.iter().any(|r| r.w == pending.resolution_w && r.h == pending.resolution_h)
+                        && let Some(best) = avail.iter().min_by_key(|r| (r.w as i32 - pending.resolution_w as i32).abs())
                     {
-                        pending.resolution_w = best.0;
-                        pending.resolution_h = best.1;
+                        pending.resolution_w = best.w;
+                        pending.resolution_h = best.h;
                     }
                 }
                 2 => {
                     let avail = crate::save::available_resolutions(pending.aspect_ratio, mon);
-                    let cur_idx = avail.iter().position(|(w, h, _, _)| *w == pending.resolution_w && *h == pending.resolution_h).unwrap_or(0);
+                    let cur_idx = avail.iter().position(|r| r.w == pending.resolution_w && r.h == pending.resolution_h).unwrap_or(0);
                     let next_idx = (cur_idx as i32 + step).rem_euclid(avail.len() as i32) as usize;
-                    pending.resolution_w = avail[next_idx].0;
-                    pending.resolution_h = avail[next_idx].1;
+                    pending.resolution_w = avail[next_idx].w;
+                    pending.resolution_h = avail[next_idx].h;
                 }
                 3 => pending.msaa = ((pending.msaa as i32 + step).rem_euclid(crate::save::MSAA_LABELS.len() as i32)) as u8,
                 4 if c.confirm => {
@@ -419,14 +413,14 @@ fn render(
             };
             let avail = crate::save::available_resolutions(pending.aspect_ratio, mon);
             let show_aspect = pending.aspect_ratio == 5;
-            let res_label = avail.iter().find(|(w, h, _, _)| *w == pending.resolution_w && *h == pending.resolution_h)
-                .map(|(w, h, is_native, aspect)| {
-                    if *is_native {
-                        format!("{w} × {h} ({})", texts.ui(Ui::Native))
+            let res_label = avail.iter().find(|r| r.w == pending.resolution_w && r.h == pending.resolution_h)
+                .map(|r| {
+                    if r.is_native {
+                        format!("{} × {} ({})", r.w, r.h, texts.ui(Ui::Native))
                     } else if show_aspect {
-                        format!("{w} × {h} ({aspect})")
+                        format!("{} × {} ({})", r.w, r.h, r.aspect)
                     } else {
-                        format!("{w} × {h}")
+                        format!("{} × {}", r.w, r.h)
                     }
                 })
                 .unwrap_or_else(|| format!("{} × {} ({})", pending.resolution_w, pending.resolution_h, texts.ui(Ui::Custom)));
